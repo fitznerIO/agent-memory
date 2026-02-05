@@ -1,4 +1,9 @@
-import type { Memory, MemoryMetadata, MemoryType, Importance } from "../shared/types.ts";
+import type {
+  Importance,
+  Memory,
+  MemoryMetadata,
+  MemoryType,
+} from "../shared/types.ts";
 
 export interface MemoryFilter {
   type?: MemoryType;
@@ -14,7 +19,14 @@ export interface MarkdownDocument {
 }
 
 export interface MemoryStore {
-  create(memory: Omit<Memory, "metadata"> & { metadata: Omit<MemoryMetadata, "id" | "createdAt" | "updatedAt" | "lastAccessedAt"> }): Promise<Memory>;
+  create(
+    memory: Omit<Memory, "metadata"> & {
+      metadata: Omit<
+        MemoryMetadata,
+        "id" | "createdAt" | "updatedAt" | "lastAccessedAt"
+      >;
+    },
+  ): Promise<Memory>;
   read(id: string): Promise<Memory>;
   readByPath(filePath: string): Promise<Memory>;
   update(id: string, content: string): Promise<Memory>;

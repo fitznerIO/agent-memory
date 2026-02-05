@@ -1,4 +1,8 @@
-import type { Memory, SearchResult, HybridSearchOptions } from "../shared/types.ts";
+import type {
+  HybridSearchOptions,
+  Memory,
+  SearchResult,
+} from "../shared/types.ts";
 
 export interface IndexStats {
   totalDocuments: number;
@@ -11,7 +15,11 @@ export interface SearchIndex {
   remove(id: string): Promise<void>;
   searchText(query: string, limit?: number): Promise<SearchResult[]>;
   searchVector(vector: Float32Array, limit?: number): Promise<SearchResult[]>;
-  searchHybrid(query: string, vector: Float32Array, options?: Partial<HybridSearchOptions>): Promise<SearchResult[]>;
+  searchHybrid(
+    query: string,
+    vector: Float32Array,
+    options?: Partial<HybridSearchOptions>,
+  ): Promise<SearchResult[]>;
   rebuild(): Promise<IndexStats>;
   close(): void;
 }

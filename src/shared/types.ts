@@ -62,3 +62,80 @@ export interface SessionState {
   startedAt: number;
   notes: MemoryNote[];
 }
+
+// Tool input/output types (PRD F-01 through F-06)
+
+export interface MemoryNoteInput {
+  content: string;
+  type: "semantic" | "episodic" | "procedural";
+  importance: Importance;
+}
+
+export interface MemoryNoteOutput {
+  success: boolean;
+  noteId: string;
+  message: string;
+}
+
+export interface MemorySearchInput {
+  query: string;
+  type?: MemoryType | "all";
+  limit?: number;
+  minScore?: number;
+}
+
+export interface MemorySearchOutput {
+  results: Array<{
+    content: string;
+    source: string;
+    score: number;
+    type: string;
+    lastAccessed: string;
+  }>;
+  totalFound: number;
+}
+
+export interface MemoryReadInput {
+  path: string;
+}
+
+export interface MemoryReadOutput {
+  content: string;
+  lastModified: string;
+  wordCount: number;
+}
+
+export interface MemoryUpdateInput {
+  path: string;
+  content: string;
+  reason: string;
+}
+
+export interface MemoryUpdateOutput {
+  success: boolean;
+  diff: string;
+  indexed: boolean;
+}
+
+export interface MemoryForgetInput {
+  query: string;
+  scope: "entry" | "topic";
+  confirm: boolean;
+}
+
+export interface MemoryForgetOutput {
+  success: boolean;
+  forgotten: string[];
+  message: string;
+}
+
+export interface MemoryCommitInput {
+  message: string;
+  type: CommitType;
+}
+
+export interface MemoryCommitOutput {
+  success: boolean;
+  commitHash: string;
+  filesChanged: number;
+}
