@@ -9,32 +9,32 @@ bun install && bun test
 ## How It Works
 
 ```
-                         createMemorySystem()
-                                 |
-                 +---------------+---------------+
-                 |               |               |
-            +---------+    +---------+    +-----------+
-            |  Tools  |    |Lifecycle|    | Internals |
-            |  API    |    |         |    |           |
-            +---------+    +---------+    +-----------+
-            | note    |    | start   |    | store     |
-            | search  |    | stop    |    | search    |
-            | read    |    +---------+    | git       |
-            | update  |                   | embedding |
-            | forget  |                   +-----------+
-            | commit  |
-            +---------+
-                 |
-    +------------+------------+------------+
-    |            |            |            |
-+--------+  +--------+  +--------+  +----------+
-| Memory |  | Search |  |  Git   |  |Embedding |
-| Store  |  | Index  |  |Manager |  | Engine   |
-+--------+  +--------+  +--------+  +----------+
-| .md    |  | FTS5   |  |isomor- |  |MiniLM-L6 |
-| files  |  |sqlite- |  |phic-git|  |384 dims  |
-| YAML   |  |vec RRF |  |        |  |local     |
-+--------+  +--------+  +--------+  +----------+
+                        createMemorySystem()
+                                │
+                ┌───────────────┼───────────────┐
+                │               │               │
+          ┌───────────┐   ┌──────────┐   ┌────────────┐
+          │  Tools    │   │Lifecycle │   │ Internals  │
+          │  API      │   │          │   │            │
+          ├───────────┤   ├──────────┤   ├────────────┤
+          │ note      │   │ start    │   │ store      │
+          │ search    │   │ stop     │   │ search     │
+          │ read      │   └──────────┘   │ git        │
+          │ update    │                  │ embedding  │
+          │ forget    │                  └────────────┘
+          │ commit    │
+          └─────┬─────┘
+                │
+    ┌───────────┼───────────┬───────────┐
+    │           │           │           │
+┌────────┐ ┌────────┐ ┌─────────┐ ┌──────────┐
+│ Memory │ │ Search │ │   Git   │ │Embedding │
+│ Store  │ │ Index  │ │ Manager │ │ Engine   │
+├────────┤ ├────────┤ ├─────────┤ ├──────────┤
+│ .md    │ │ FTS5   │ │isomor-  │ │MiniLM-L6 │
+│ files  │ │sqlite- │ │phic-git │ │384 dims  │
+│ YAML   │ │vec RRF │ │         │ │local     │
+└────────┘ └────────┘ └─────────┘ └──────────┘
 ```
 
 ## Architecture
@@ -43,25 +43,26 @@ Four isolated modules plus an orchestrator. Modules never import from each other
 
 ```
 src/
-  index.ts              Orchestrator — createMemorySystem()
-  memory/
-    store.ts            File-based CRUD with YAML frontmatter
-    parser.ts           Markdown + YAML parsing/serialization
-    types.ts            MemoryStore interface
-  search/
-    index.ts            FTS5 + sqlite-vec hybrid search
-    schema.sql          SQLite table definitions
-    types.ts            SearchIndex interface
-  git/
-    manager.ts          Git versioning via isomorphic-git
-    types.ts            GitManager interface
-  embedding/
-    engine.ts           Local embeddings via @huggingface/transformers
-    types.ts            EmbeddingEngine interface
-  shared/
-    types.ts            Shared domain types (Memory, SearchResult, ...)
-    config.ts           MemoryConfig + defaults
-    errors.ts           Custom error classes
+├── index.ts              Orchestrator — createMemorySystem()
+├── cli.ts                CLI entry point — agent-memory <command>
+├── memory/
+│   ├── store.ts          File-based CRUD with YAML frontmatter
+│   ├── parser.ts         Markdown + YAML parsing/serialization
+│   └── types.ts          MemoryStore interface
+├── search/
+│   ├── index.ts          FTS5 + sqlite-vec hybrid search
+│   ├── schema.sql        SQLite table definitions
+│   └── types.ts          SearchIndex interface
+├── git/
+│   ├── manager.ts        Git versioning via isomorphic-git
+│   └── types.ts          GitManager interface
+├── embedding/
+│   ├── engine.ts         Local embeddings via @huggingface/transformers
+│   └── types.ts          EmbeddingEngine interface
+└── shared/
+    ├── types.ts          Shared domain types (Memory, SearchResult, ...)
+    ├── config.ts         MemoryConfig + defaults
+    └── errors.ts         Custom error classes
 ```
 
 ## Modules
@@ -72,10 +73,10 @@ Each memory is a Markdown file with YAML frontmatter, organized by type:
 
 ```
 ~/.agent-memory/
-  core/           System identity, persistent instructions
-  semantic/       Facts, knowledge, learned concepts
-  episodic/       Session logs, conversations, events
-  procedural/     How-tos, workflows, patterns
+├── core/           System identity, persistent instructions
+├── semantic/       Facts, knowledge, learned concepts
+├── episodic/       Session logs, conversations, events
+└── procedural/     How-tos, workflows, patterns
 ```
 
 A memory file looks like this:
@@ -101,32 +102,33 @@ Hybrid search combining three signals via [Reciprocal Rank Fusion](https://plg.u
 
 ```
                     Query: "TypeScript generics"
-                            |
-              +-------------+-------------+
-              |                           |
-        +-----+-----+              +-----+-----+
-        |   FTS5    |              | sqlite-vec |
-        |  BM25     |              |  cosine    |
-        | (text)    |              | (semantic) |
-        +-----+-----+              +-----+-----+
-              |                           |
-              |   Rank 1: doc_a           |   Rank 1: doc_b
-              |   Rank 2: doc_c           |   Rank 2: doc_a
-              |   Rank 3: doc_b           |   Rank 3: doc_d
-              |                           |
-              +-------------+-------------+
-                            |
-                    Reciprocal Rank Fusion
-                    score = w_fts / (k + rank_fts)
-                         + w_vec / (k + rank_vec)
-                         + w_rec * recency_factor
-                            |
-                    +-------+-------+
-                    | Merged Results |
-                    | 1. doc_a  0.42 |
-                    | 2. doc_b  0.38 |
-                    | 3. doc_c  0.21 |
-                    +----------------+
+                              │
+                ┌─────────────┴─────────────┐
+                │                           │
+          ┌───────────┐               ┌───────────┐
+          │   FTS5    │               │sqlite-vec │
+          │   BM25    │               │  cosine   │
+          │  (text)   │               │(semantic) │
+          └─────┬─────┘               └─────┬─────┘
+                │                           │
+                │  Rank 1: doc_a            │  Rank 1: doc_b
+                │  Rank 2: doc_c            │  Rank 2: doc_a
+                │  Rank 3: doc_b            │  Rank 3: doc_d
+                │                           │
+                └─────────────┬─────────────┘
+                              │
+                  Reciprocal Rank Fusion
+                  score = w_fts / (k + rank_fts)
+                       + w_vec / (k + rank_vec)
+                       + w_rec * recency_factor
+                              │
+                    ┌─────────┴────────┐
+                    │  Merged Results  │
+                    ├──────────────────┤
+                    │  1. doc_a  0.42  │
+                    │  2. doc_b  0.38  │
+                    │  3. doc_c  0.21  │
+                    └──────────────────┘
 ```
 
 Default weights: FTS 0.3 / Vector 0.5 / Recency 0.2 (configurable).
@@ -256,41 +258,41 @@ await memory.stop();
 ## Data Flow
 
 ```
-Agent Session
-    |
-    | note("User prefers TS")
-    v
-+-------------------+      write      +------------------+
-| Memory Store      | ───────────────>| semantic/abc.md  |
-| (CRUD)            |                 | (YAML + content) |
-+-------------------+                 +------------------+
-    |                                          |
-    | memory object                            | read on search
-    v                                          v
-+-------------------+   embed   +-------------------+
-| Embedding Engine  | ────────> | Search Index      |
-| (MiniLM-L6)      |   384d    | (SQLite)          |
-+-------------------+  vector   |  - memories table |
-                                |  - FTS5 (text)    |
-                                |  - vec0 (vectors) |
-                                +-------------------+
-                                         |
-                                         | hybrid search
-                                         v
-                                +-------------------+
-                                | RRF Merge         |
-                                | FTS + Vec + Time  |
-                                +-------------------+
-                                         |
-    +------------------------------------+
-    |
-    | commit("capture preferences", "semantic")
-    v
-+-------------------+
-| Git Manager       |
-| (isomorphic-git)  |
-| [semantic] msg    |
-+-------------------+
+  Agent Session
+       │
+       │  note("User prefers TS")
+       ▼
+  ┌───────────────────┐    write     ┌──────────────────┐
+  │ Memory Store      │────────────▶ │ semantic/abc.md  │
+  │ (CRUD)            │              │ (YAML + content) │
+  └────────┬──────────┘              └────────┬─────────┘
+           │                                  │
+           │ memory object                    │ read on search
+           ▼                                  ▼
+  ┌───────────────────┐  embed  ┌───────────────────┐
+  │ Embedding Engine  │────────▶│ Search Index      │
+  │ (MiniLM-L6)      │  384d   │ (SQLite)          │
+  └───────────────────┘ vector  │  ├ memories table │
+                                │  ├ FTS5 (text)    │
+                                │  └ vec0 (vectors) │
+                                └─────────┬─────────┘
+                                          │
+                                          │ hybrid search
+                                          ▼
+                                ┌───────────────────┐
+                                │ RRF Merge         │
+                                │ FTS + Vec + Time  │
+                                └─────────┬─────────┘
+                                          │
+       ┌──────────────────────────────────┘
+       │
+       │  commit("capture preferences", "semantic")
+       ▼
+  ┌───────────────────┐
+  │ Git Manager       │
+  │ (isomorphic-git)  │
+  │ [semantic] msg    │
+  └───────────────────┘
 ```
 
 ## Commands
