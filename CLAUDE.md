@@ -62,6 +62,10 @@ bun run lint:fix          # Auto-fix lint issues
 - **search-specialist**: Implements `src/search/` module. Expert in FTS5, sqlite-vec, RRF hybrid scoring.
 - **quality-gate**: Read-only reviewer. Validates implementations against type contracts, runs tests, reports issues. Has no Write/Edit access.
 
+## Memory Store (Dogfooding)
+
+This project uses its own memory system. Use `/memory` or `bun run cli --` to store and recall context across sessions.
+
 ## Tech Stack
 
 Bun, TypeScript 5 (strict), bun:sqlite, sqlite-vec, isomorphic-git, @huggingface/transformers, yaml

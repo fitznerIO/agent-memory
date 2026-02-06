@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createEmbeddingEngine } from "./embedding/engine.ts";
 import type { EmbeddingEngine } from "./embedding/types.ts";
 import { createGitManager } from "./git/manager.ts";
@@ -155,9 +155,6 @@ export function createMemorySystem(
 
   let session: SessionState | null = null;
 
-  const sessionDir = join(config.baseDir, ".session");
-  const notesPath = join(sessionDir, "notes.md");
-
   async function indexMemoryWithEmbedding(
     memory: Memory,
     searchIndex: SearchIndex,
@@ -212,22 +209,32 @@ export function createMemorySystem(
     globalGit: global?.git,
 
     async note(input: MemoryNoteInput): Promise<MemoryNoteOutput> {
-      const noteId = randomUUID();
       const timestamp = Date.now();
-      const entry = `\n## [${new Date(timestamp).toISOString()}] [${input.importance}]\n\n${input.content}\n`;
 
-      // Ensure session directory exists
-      await mkdir(sessionDir, { recursive: true });
+      // Create a real memory file in the store
+      const title =
+        input.content.length <= 60
+          ? input.content
+          : `${input.content.slice(0, 57)}...`;
+      const memory = await project.store.create({
+        metadata: {
+          title,
+          type: input.type,
+          tags: [],
+          importance: input.importance,
+          source: "agent-session",
+        },
+        content: input.content,
+        filePath: "",
+      });
 
-      // Append to session notes file
-      const file = Bun.file(notesPath);
-      const existing = (await file.exists()) ? await file.text() : "";
-      await Bun.write(notesPath, existing + entry);
+      // Index for search
+      await indexMemoryWithEmbedding(memory, project.searchIndex);
 
       // Track in session state
       if (session) {
         session.notes.push({
-          noteId,
+          noteId: memory.metadata.id,
           content: input.content,
           type: input.type,
           importance: input.importance,
@@ -237,7 +244,7 @@ export function createMemorySystem(
 
       return {
         success: true,
-        noteId,
+        noteId: memory.metadata.id,
         message: `Note saved: ${input.content.slice(0, 50)}${input.content.length > 50 ? "..." : ""}`,
       };
     },
@@ -383,7 +390,6 @@ export function createMemorySystem(
 
       // Ensure base directories exist
       await mkdir(config.baseDir, { recursive: true });
-      await mkdir(sessionDir, { recursive: true });
 
       // Initialize project git if needed
       const initialized = await project.git.isInitialized();
@@ -406,21 +412,6 @@ export function createMemorySystem(
     },
 
     async stop(): Promise<void> {
-      const file = Bun.file(notesPath);
-      if (await file.exists()) {
-        const notes = await file.text();
-        if (notes.trim().length > 0) {
-          try {
-            await project.git.commit(
-              `Session ${session?.sessionId ?? "unknown"}: ${session?.notes.length ?? 0} notes captured`,
-              "consolidate",
-            );
-          } catch {
-            // No changes to commit
-          }
-        }
-      }
-
       // Cleanup
       project.searchIndex.close();
       if (global) {

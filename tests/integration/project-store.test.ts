@@ -239,16 +239,32 @@ describe("Dual-store", () => {
     TEST_TIMEOUT,
   );
 
-  test("write operations go to project store by default", async () => {
-    const noteResult = await system.note({
-      content: "A project-specific note for testing",
-      type: "semantic",
-      importance: "medium",
-    });
-    expect(noteResult.success).toBe(true);
+  test(
+    "write operations go to project store by default",
+    async () => {
+      const noteResult = await system.note({
+        content: "A project-specific note for testing write ops",
+        type: "semantic",
+        importance: "medium",
+      });
+      expect(noteResult.success).toBe(true);
 
-    // Note should be in project session dir
-    const sessionDir = join(system.config.baseDir, ".session");
-    expect(existsSync(join(sessionDir, "notes.md"))).toBe(true);
-  });
+      // Note should be a real memory file in the project store
+      const memory = await system.store.read(noteResult.noteId);
+      expect(memory.content).toBe(
+        "A project-specific note for testing write ops",
+      );
+      expect(memory.metadata.type).toBe("semantic");
+
+      // Note should be searchable
+      const results = await system.search({
+        query: "testing write ops",
+        limit: 1,
+        minScore: 0.0,
+      });
+      expect(results.totalFound).toBeGreaterThanOrEqual(1);
+      expect(results.results[0]?.storeSource).toBe("project");
+    },
+    TEST_TIMEOUT,
+  );
 });
