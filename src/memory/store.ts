@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
-import type { MemoryConfig } from "@shared/config.ts";
+import type { MemoryConfig } from "../shared/config.ts";
 import {
   InvalidMemoryTypeError,
   MemoryNotFoundError,
   PathTraversalError,
-} from "@shared/errors.ts";
-import type { Memory, MemoryMetadata, MemoryType } from "@shared/types.ts";
+} from "../shared/errors.ts";
+import type { Memory, MemoryMetadata, MemoryType } from "../shared/types.ts";
 import { parseMarkdown, serializeMarkdown } from "./parser.ts";
 import type { MemoryFilter, MemoryStore } from "./types.ts";
 

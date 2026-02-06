@@ -1,13 +1,13 @@
 import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { MemoryConfig } from "@shared/config.ts";
+import * as sqliteVec from "sqlite-vec";
+import type { MemoryConfig } from "../shared/config.ts";
 import type {
   HybridSearchOptions,
   Memory,
   SearchResult,
-} from "@shared/types.ts";
-import * as sqliteVec from "sqlite-vec";
+} from "../shared/types.ts";
 import type { IndexStats, SearchIndex } from "./types.ts";
 
 /**

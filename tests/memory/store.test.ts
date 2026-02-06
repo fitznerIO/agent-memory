@@ -1,9 +1,9 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { join } from "node:path";
 import { createMemoryStore } from "../../src/memory/store.ts";
-import { InvalidMemoryTypeError, MemoryNotFoundError, PathTraversalError } from "@shared/errors.ts";
+import { InvalidMemoryTypeError, MemoryNotFoundError, PathTraversalError } from "../../src/shared/errors.ts";
 import { createTempDir, cleanupTempDir } from "../helpers/fixtures.ts";
-import type { MemoryConfig } from "@shared/config.ts";
+import type { MemoryConfig } from "../../src/shared/config.ts";
 
 describe("MemoryStore", () => {
   let tempDir: string;
