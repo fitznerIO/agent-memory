@@ -277,6 +277,7 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
         score: -row.bm25_score, // Negate: bm25() returns negative, more negative = better
         matchType: "fts" as const,
         source: "fts5",
+        storeSource: "project" as const,
       }));
     },
 
@@ -296,6 +297,7 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
             score: 1 - vecRow.distance, // cosine distance 0..2 -> similarity 1..-1
             matchType: "vector" as const,
             source: "sqlite-vec",
+            storeSource: "project" as const,
           });
         }
       }
@@ -383,6 +385,7 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
           score: s.score,
           matchType: "hybrid" as const,
           source: "hybrid-rrf",
+          storeSource: "project" as const,
         }));
     },
 

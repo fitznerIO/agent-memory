@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { createMemorySystem } from "./index.ts";
 import type { MemorySystem } from "./index.ts";
+import { findProjectRoot } from "./shared/config.ts";
 
 function parseArgs(argv: string[]): {
   command: string;
@@ -18,7 +21,7 @@ function parseArgs(argv: string[]): {
         flags[key] = value;
         i++;
       } else {
-        // Boolean flag (e.g. --confirm)
+        // Boolean flag (e.g. --confirm, --global, --no-global)
         flags[key] = "true";
       }
     }
@@ -40,8 +43,28 @@ async function initSystem(
   flags: Record<string, string>,
 ): Promise<MemorySystem> {
   const overrides: Record<string, unknown> = {};
+
+  // Project store: explicit flag or auto-detect from cwd
+  if (flags["project-dir"]) {
+    overrides.baseDir = join(flags["project-dir"], ".agent-memory");
+    overrides.sqlitePath = join(
+      flags["project-dir"],
+      ".agent-memory",
+      ".index",
+      "search.sqlite",
+    );
+  }
+
+  // Legacy flag support
   if (flags["base-dir"]) overrides.baseDir = flags["base-dir"];
   if (flags["sqlite-path"]) overrides.sqlitePath = flags["sqlite-path"];
+
+  // Global store: enabled by default, disabled with --no-global
+  if (flags["no-global"] !== "true") {
+    const globalDir = flags["global-dir"] ?? join(homedir(), ".agent-memory");
+    overrides.globalDir = globalDir;
+    overrides.globalSqlitePath = join(globalDir, ".index", "search.sqlite");
+  }
 
   const system = createMemorySystem(overrides);
   await system.start();
@@ -63,8 +86,10 @@ Commands:
   commit   Git commit pending changes
 
 Global flags:
-  --base-dir <path>     Memory directory (default: ~/.agent-memory)
-  --sqlite-path <path>  SQLite database path
+  --project-dir <path>  Project root (auto-detected from .git/package.json)
+  --global-dir <path>   Global memory directory (default: ~/.agent-memory)
+  --no-global           Disable global store
+  --global              Route writes to global store
 
 Examples:
   agent-memory note --content "User prefers TypeScript" --type semantic --importance medium
@@ -78,6 +103,9 @@ Examples:
 
   try {
     system = await initSystem(flags);
+
+    // Determine target store for write operations
+    const useGlobal = flags.global === "true" && system.globalStore;
 
     switch (command) {
       case "note": {
@@ -162,6 +190,9 @@ Examples:
   } finally {
     if (system) {
       system.searchIndex.close();
+      if (system.globalSearchIndex) {
+        system.globalSearchIndex.close();
+      }
     }
   }
 }

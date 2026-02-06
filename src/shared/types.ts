@@ -35,11 +35,14 @@ export interface MemoryNote {
   timestamp: number;
 }
 
+export type StoreSource = "project" | "global";
+
 export interface SearchResult {
   memory: Memory;
   score: number;
   matchType: "fts" | "vector" | "hybrid";
   source: string;
+  storeSource: StoreSource;
 }
 
 export interface EmbeddingVector {
@@ -91,6 +94,7 @@ export interface MemorySearchOutput {
     score: number;
     type: string;
     lastAccessed: string;
+    storeSource: StoreSource;
   }>;
   totalFound: number;
 }

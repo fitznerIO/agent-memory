@@ -72,7 +72,7 @@ src/
 Each memory is a Markdown file with YAML frontmatter, organized by type:
 
 ```
-~/.agent-memory/
+<project>/.agent-memory/
 ├── core/           System identity, persistent instructions
 ├── semantic/       Facts, knowledge, learned concepts
 ├── episodic/       Session logs, conversations, events
@@ -185,7 +185,14 @@ bun run src/cli.ts forget --query "outdated info" --scope entry --confirm
 bun run src/cli.ts commit --message "Session notes" --type consolidate
 ```
 
-Global flags: `--base-dir <path>` (default: `~/.agent-memory`), `--sqlite-path <path>`
+Global flags:
+
+```
+--project-dir <path>  Project root (auto-detected from .git/package.json)
+--global-dir <path>   Global memory directory (default: ~/.agent-memory)
+--no-global           Disable global store
+--global              Route writes to global store
+```
 
 ### Example output
 
@@ -197,7 +204,8 @@ Global flags: `--base-dir <path>` (default: `~/.agent-memory`), `--sqlite-path <
       "source": "semantic/abc123.md",
       "score": 0.42,
       "type": "semantic",
-      "lastAccessed": "2025-01-15T10:30:00.000Z"
+      "lastAccessed": "2025-01-15T10:30:00.000Z",
+      "storeSource": "project"
     }
   ],
   "totalFound": 1
@@ -213,6 +221,30 @@ A built-in skill at `.claude/skills/memory/SKILL.md` teaches Claude when and how
 - Commits changes at the end of productive sessions
 
 Use `/memory` in Claude Code to invoke it manually, or let Claude trigger it automatically.
+
+## Per-Project Store
+
+Memories are stored **per project** in `.agent-memory/` at the project root. The project root is auto-detected by walking up from `cwd` looking for `.git/` or `package.json`.
+
+```
+my-project/
+├── .git/                     Project repo
+├── .gitignore                .agent-memory/ auto-added on first use
+├── src/
+└── .agent-memory/            Project-specific memories
+    ├── .git/                 Memory versioning (separate repo)
+    ├── .index/search.sqlite  Search index
+    ├── core/
+    ├── semantic/
+    ├── episodic/
+    └── procedural/
+```
+
+A **global store** at `~/.agent-memory/` is also searched by default. Use it for cross-project knowledge (preferences, general patterns). Search results include `storeSource: "project" | "global"` so you know where each result came from.
+
+- `.gitignore` is auto-managed: `.agent-memory/` is added to the project's `.gitignore` on first use
+- Write operations default to the project store. Use `--global` to write to the global store
+- Use `--no-global` to skip the global store in search
 
 ## Library API
 
