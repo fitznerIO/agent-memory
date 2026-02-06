@@ -33,7 +33,7 @@
     "bun"
   ],
   "scripts": {
-    "dev": "bun run src/index.ts",
+    "cli": "bun run src/cli.ts",
     "build": "tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
     "test": "bun test",

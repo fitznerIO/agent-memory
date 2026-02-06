@@ -167,22 +167,22 @@ All commands output JSON. Errors go to stderr with exit code 1.
 
 ```bash
 # Save a note
-bun run src/cli.ts note --content "User prefers TypeScript" --type semantic --importance medium
+bun run cli -- note --content "User prefers TypeScript" --type semantic --importance medium
 
 # Search memories
-bun run src/cli.ts search --query "TypeScript preferences" --limit 5
+bun run cli -- search --query "TypeScript preferences" --limit 5
 
 # Read a specific memory
-bun run src/cli.ts read --path "semantic/abc123.md"
+bun run cli -- read --path "semantic/abc123.md"
 
 # Update a memory
-bun run src/cli.ts update --path "semantic/abc.md" --content "New content" --reason "Updated info"
+bun run cli -- update --path "semantic/abc.md" --content "New content" --reason "Updated info"
 
 # Forget a memory
-bun run src/cli.ts forget --query "outdated info" --scope entry --confirm
+bun run cli -- forget --query "outdated info" --scope entry --confirm
 
 # Commit changes to git
-bun run src/cli.ts commit --message "Session notes" --type consolidate
+bun run cli -- commit --message "Session notes" --type consolidate
 ```
 
 Global flags:
@@ -374,12 +374,12 @@ import type {
 ## Commands
 
 ```bash
-bun test                    # All tests (85)
+bun test                    # All tests (96)
 bun run test:memory         # Memory store + parser (25)
 bun run test:search         # Search index (17)
 bun run test:git            # Git manager (22)
 bun run test:embedding      # Embedding engine (14)
-bun run test:integration    # End-to-end flows (7)
+bun run test:integration    # End-to-end flows (17)
 bun run typecheck           # TypeScript strict mode
 bun run lint                # Biome linter
 bun run lint:fix            # Auto-fix lint issues

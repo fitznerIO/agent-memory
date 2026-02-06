@@ -7,3 +7,6 @@ coverage/
 *.bin
 dist/
 .session/
+
+# Agent memory store
+.agent-memory/

@@ -5,7 +5,7 @@ description: >
   and forget information across sessions. Trigger when context from past
   sessions would help, when the user shares preferences or important facts,
   or when information should be remembered for later.
-allowed-tools: Bash(bunx agent-memory *), Bash(bun run */cli.ts *)
+allowed-tools: Bash(bunx agent-memory *), Bash(bun run cli -- *)
 ---
 
 # Agent Memory
