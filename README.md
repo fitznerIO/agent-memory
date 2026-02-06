@@ -216,10 +216,25 @@ Use `/memory` in Claude Code to invoke it manually, or let Claude trigger it aut
 
 ## Library API
 
-For programmatic use (requires Bun):
+### Installation
+
+```bash
+# From GitHub (no npm publish required)
+bun add github:fitznerIO/agent-memory
+
+# From npm (after publishing)
+bun add agent-memory
+
+# Local development
+bun link          # in agent-memory/
+bun link agent-memory  # in your project/
+```
+
+### Usage
 
 ```typescript
 import { createMemorySystem } from "agent-memory";
+import type { MemorySearchInput, MemoryConfig } from "agent-memory";
 
 const memory = createMemorySystem({
   baseDir: "/path/to/memory",
@@ -254,6 +269,35 @@ await memory.stop();
 | `update` | `{ path, content, reason }` | Update content + auto-reindex |
 | `forget` | `{ query, scope, confirm }` | Delete matching memories |
 | `commit` | `{ message, type }` | Git commit with semantic type |
+
+### Exported Types
+
+All public types are available from the package root:
+
+```typescript
+import type {
+  MemorySystem,       // Main interface returned by createMemorySystem()
+  MemoryConfig,       // Configuration options
+  Memory,             // A memory document (metadata + content + filePath)
+  MemoryMetadata,     // YAML frontmatter fields (id, title, type, tags, ...)
+  MemoryType,         // "core" | "semantic" | "episodic" | "procedural"
+  Importance,         // "high" | "medium" | "low"
+  CommitType,         // "semantic" | "episodic" | "procedural" | "consolidate" | "archive"
+  SearchResult,       // Search hit with score and match type
+  MemoryNoteInput,    // Input/output types for each tool method
+  MemoryNoteOutput,
+  MemorySearchInput,
+  MemorySearchOutput,
+  MemoryReadInput,
+  MemoryReadOutput,
+  MemoryUpdateInput,
+  MemoryUpdateOutput,
+  MemoryForgetInput,
+  MemoryForgetOutput,
+  MemoryCommitInput,
+  MemoryCommitOutput,
+} from "agent-memory";
+```
 
 ## Data Flow
 

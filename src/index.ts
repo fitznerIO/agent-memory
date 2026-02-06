@@ -10,7 +10,30 @@ import { createMemoryStore } from "./memory/store.ts";
 import type { MemoryStore } from "./memory/types.ts";
 import { createSearchIndex } from "./search/index.ts";
 import type { SearchIndex } from "./search/types.ts";
+export type { MemoryConfig } from "./shared/config.ts";
+
 import { type MemoryConfig, createDefaultConfig } from "./shared/config.ts";
+export type {
+  CommitType,
+  Importance,
+  Memory,
+  MemoryCommitInput,
+  MemoryCommitOutput,
+  MemoryForgetInput,
+  MemoryForgetOutput,
+  MemoryMetadata,
+  MemoryNoteInput,
+  MemoryNoteOutput,
+  MemoryReadInput,
+  MemoryReadOutput,
+  MemorySearchInput,
+  MemorySearchOutput,
+  MemoryType,
+  MemoryUpdateInput,
+  MemoryUpdateOutput,
+  SearchResult,
+} from "./shared/types.ts";
+
 import type {
   CommitType,
   Memory,
