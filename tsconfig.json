@@ -14,13 +14,7 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
-    "paths": {
-      "@shared/*": ["./src/shared/*"],
-      "@memory/*": ["./src/memory/*"],
-      "@search/*": ["./src/search/*"],
-      "@git/*": ["./src/git/*"],
-      "@embedding/*": ["./src/embedding/*"]
-    }
+    "paths": {}
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"]
 }

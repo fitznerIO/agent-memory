@@ -45,7 +45,7 @@ Run `bun run lint` and report violations.
 ### 6. Module Isolation
 Verify no cross-module imports exist:
 - Grep for imports between modules (e.g., memory importing from search)
-- Only @shared/* imports are allowed across module boundaries
+- Only ../shared/* imports are allowed across module boundaries
 - Flag any violations
 
 ### 7. Security Check

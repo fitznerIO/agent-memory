@@ -18,7 +18,7 @@ Four modules + orchestrator. Each module has types in `types.ts` and implementat
 ## Module Isolation
 
 Modules may ONLY import from:
-- `@shared/*` (shared types, errors, config)
+- `../shared/*` (shared types, errors, config)
 - Their own directory
 
 Cross-module imports are forbidden. The orchestrator in `src/index.ts` is the sole integration point.

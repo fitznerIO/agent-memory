@@ -69,7 +69,7 @@ score(doc) = weight_fts * (1 / (k + rank_fts)) + weight_vec * (1 / (k + rank_vec
 - Add recency boost: `recency_factor = 1 / (1 + days_since_update / 365)`
 
 ## Constraints
-- Import only from @shared/* and src/search/
+- Import only from ../shared/* and src/search/
 - Implement against the interface in src/search/types.ts exactly
 - Do NOT modify any types.ts files
 - All tests must pass: `bun test tests/search/`
