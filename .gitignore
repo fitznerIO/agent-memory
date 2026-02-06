@@ -8,5 +8,8 @@ coverage/
 dist/
 .session/
 
+# macOS
+.DS_Store
+
 # Agent memory store
 .agent-memory/
