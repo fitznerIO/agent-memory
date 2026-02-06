@@ -51,12 +51,7 @@
   "dependencies": {
     "@huggingface/transformers": "^3.4.0",
     "isomorphic-git": "^1.27.1",
-    "remark": "^15.0.0",
-    "remark-frontmatter": "^5.0.0",
-    "remark-parse": "^11.0.0",
-    "remark-stringify": "^11.0.0",
     "sqlite-vec": "^0.1.6",
-    "unified": "^11.0.0",
     "yaml": "^2.7.0"
   },
   "devDependencies": {

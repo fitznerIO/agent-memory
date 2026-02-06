@@ -45,12 +45,6 @@ export interface SearchResult {
   storeSource: StoreSource;
 }
 
-export interface EmbeddingVector {
-  memoryId: string;
-  vector: Float32Array;
-  dimensions: number;
-}
-
 export interface HybridSearchOptions {
   limit: number;
   minScore: number;

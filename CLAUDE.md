@@ -55,7 +55,6 @@ bun run lint:fix          # Auto-fix lint issues
 
 - Use `bun:test` — `describe`, `test`, `expect`
 - Filesystem tests: use `createTempDir()` / `cleanupTempDir()` from `tests/helpers/fixtures.ts`
-- Search tests: use `createTestDb()` from `tests/helpers/db.ts` (in-memory SQLite)
 - Integration tests go in `tests/integration/`
 
 ## Custom Agents
@@ -65,4 +64,4 @@ bun run lint:fix          # Auto-fix lint issues
 
 ## Tech Stack
 
-Bun, TypeScript 5 (strict), bun:sqlite, sqlite-vec, isomorphic-git, @huggingface/transformers, remark, yaml
+Bun, TypeScript 5 (strict), bun:sqlite, sqlite-vec, isomorphic-git, @huggingface/transformers, yaml

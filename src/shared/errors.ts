@@ -5,13 +5,6 @@ export class MemoryNotFoundError extends Error {
   }
 }
 
-export class IndexCorruptionError extends Error {
-  constructor(detail: string) {
-    super(`Index corruption detected: ${detail}`);
-    this.name = "IndexCorruptionError";
-  }
-}
-
 export class PathTraversalError extends Error {
   constructor(path: string) {
     super(`Path traversal attempt blocked: ${path}`);
