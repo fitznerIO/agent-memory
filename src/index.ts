@@ -407,38 +407,89 @@ export function createMemorySystem(
       const queryEmbedding = await embedding.embed(input.query);
       const limit = input.limit ?? 5;
 
+      // Build filter sets for v2-lite tag and connected_to filters
+      let tagFilterIds: Set<string> | null = null;
+      let connFilterIds: Set<string> | null = null;
+
+      if (input.tags && input.tags.length > 0) {
+        const ids = await project.searchIndex.getEntriesByTags(input.tags);
+        tagFilterIds = new Set(ids);
+      }
+
+      if (input.connected_to) {
+        const ids = await project.searchIndex.getConnectedEntryIds(
+          input.connected_to,
+        );
+        connFilterIds = new Set(ids);
+      }
+
+      // Fetch more results to account for post-filtering
+      const fetchLimit =
+        tagFilterIds || connFilterIds ? limit * 5 : limit;
+
       // Search project store
       const projectResults = await project.searchIndex.searchHybrid(
         input.query,
         queryEmbedding.vector,
-        { limit, minScore: input.minScore ?? 0.3 },
+        { limit: fetchLimit, minScore: input.minScore ?? 0.3 },
       );
 
       // Search global store if available
-      let finalResults: SearchResult[];
+      let rawResults: SearchResult[];
       if (global) {
         const globalResults = await global.searchIndex.searchHybrid(
           input.query,
           queryEmbedding.vector,
-          { limit, minScore: input.minScore ?? 0.3 },
+          { limit: fetchLimit, minScore: input.minScore ?? 0.3 },
         );
-        finalResults = mergeSearchResults(projectResults, globalResults, limit);
+        rawResults = mergeSearchResults(projectResults, globalResults, fetchLimit);
       } else {
-        finalResults = projectResults;
+        rawResults = projectResults;
       }
 
+      // Apply v2-lite filters
+      let finalResults = rawResults;
+      if (tagFilterIds) {
+        finalResults = finalResults.filter((r) =>
+          tagFilterIds.has(r.memory.metadata.id),
+        );
+      }
+      if (connFilterIds) {
+        finalResults = finalResults.filter((r) =>
+          connFilterIds.has(r.memory.metadata.id),
+        );
+      }
+
+      finalResults = finalResults.slice(0, limit);
+
+      // Enrich results with v2-lite metadata
+      const enrichedResults = await Promise.all(
+        finalResults.map(async (r) => {
+          const id = r.memory.metadata.id;
+          const knowledgeEntry =
+            await project.searchIndex.getKnowledgeById(id);
+
+          return {
+            content: r.memory.content,
+            source: r.memory.filePath,
+            score: r.score,
+            type: r.memory.metadata.type,
+            lastAccessed: new Date(
+              r.memory.metadata.lastAccessedAt,
+            ).toISOString(),
+            storeSource: r.storeSource,
+            // v2-lite enrichment (only if entry exists in knowledge table)
+            id: knowledgeEntry?.id ?? id,
+            title: knowledgeEntry?.title ?? r.memory.metadata.title,
+            tags: knowledgeEntry?.tags,
+            connections: knowledgeEntry?.connections,
+          };
+        }),
+      );
+
       return {
-        results: finalResults.map((r) => ({
-          content: r.memory.content,
-          source: r.memory.filePath,
-          score: r.score,
-          type: r.memory.metadata.type,
-          lastAccessed: new Date(
-            r.memory.metadata.lastAccessedAt,
-          ).toISOString(),
-          storeSource: r.storeSource,
-        })),
-        totalFound: finalResults.length,
+        results: enrichedResults,
+        totalFound: enrichedResults.length,
       };
     },
 

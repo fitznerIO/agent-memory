@@ -64,4 +64,10 @@ export interface SearchIndex {
 
   // v2-lite: Decay connection-awareness (PRD 10.2)
   getActiveConnectionCount(id: string): Promise<number>;
+
+  // v2-lite: Tag-based filtering (hierarchical namespace tags)
+  getEntriesByTags(tags: string[]): Promise<string[]>;
+
+  // v2-lite: Connected-to filtering
+  getConnectedEntryIds(id: string): Promise<string[]>;
 }

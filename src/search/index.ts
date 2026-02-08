@@ -687,5 +687,35 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       const row = selectActiveConnCount.get(id, id);
       return row?.cnt ?? 0;
     },
+
+    async getEntriesByTags(tags: string[]): Promise<string[]> {
+      if (tags.length === 0) return [];
+
+      // Build query with hierarchical LIKE matching per tag
+      // Each tag "tech/ai" matches exact "tech/ai" or prefix "tech/ai/%"
+      const conditions = tags.map(
+        () => "(tag = ? OR tag LIKE ? ESCAPE '\\')",
+      );
+      const params: string[] = [];
+      for (const tag of tags) {
+        const normalized = tag.toLowerCase().replace(/\/+$/, "");
+        params.push(normalized);
+        params.push(`${normalized}/%`);
+      }
+
+      const sql = `SELECT DISTINCT entry_id FROM entry_tags WHERE ${conditions.join(" OR ")}`;
+      const rows = db.query<{ entry_id: string }, string[]>(sql).all(...params);
+      return rows.map((r) => r.entry_id);
+    },
+
+    async getConnectedEntryIds(id: string): Promise<string[]> {
+      const rows = selectConnBoth.all(id, id);
+      const ids = new Set<string>();
+      for (const row of rows) {
+        if (row.source_id === id) ids.add(row.target_id);
+        else ids.add(row.source_id);
+      }
+      return [...ids];
+    },
   };
 }

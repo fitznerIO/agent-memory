@@ -8,7 +8,11 @@
 // -- SearchIndex tests require custom SQLite on macOS --------------------------
 import { Database } from "bun:sqlite";
 if (process.platform === "darwin") {
-  Database.setCustomSQLite("/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib");
+  try {
+    Database.setCustomSQLite("/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib");
+  } catch {
+    // Already configured by another test file
+  }
 }
 
 import {
@@ -179,7 +183,6 @@ describe(
       expect(count).toBe(0);
     });
   },
-  { timeout: TEST_TIMEOUT },
 );
 
 // =============================================================================
@@ -353,7 +356,6 @@ describe(
       TEST_TIMEOUT,
     );
   },
-  { timeout: TEST_TIMEOUT },
 );
 
 // =============================================================================
@@ -604,5 +606,4 @@ describe(
       });
     });
   },
-  { timeout: TEST_TIMEOUT },
 );
