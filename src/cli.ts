@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createMemorySystem } from "./index.ts";
 import type { MemorySystem } from "./index.ts";
+import { migrateSplitFiles } from "./migration/split-files.ts";
 import { findProjectRoot } from "./shared/config.ts";
 
 function parseArgs(argv: string[]): {
@@ -87,6 +88,7 @@ Commands:
   store      Create individual knowledge file (v2-lite)
   connect    Create bidirectional connection (v2-lite)
   traverse   Navigate knowledge network (v2-lite)
+  migrate    Run migrations (split-files)
 
 Global flags:
   --project-dir <path>  Project root (auto-detected from .git/package.json)
@@ -101,7 +103,29 @@ Examples:
   agent-memory store --title "Webhook statt Polling" --type decision --content "..."
   agent-memory connect --source dec-001 --target inc-001 --type related
   agent-memory traverse --start dec-001 --direction both
-  agent-memory commit --message "Session notes" --type consolidate`);
+  agent-memory commit --message "Session notes" --type consolidate
+  agent-memory migrate --step split-files`);
+    process.exit(0);
+  }
+
+  // Handle migrate command separately (no MemorySystem needed)
+  if (command === "migrate") {
+    const step = requireFlag(flags, "step");
+    const projectDir = flags["project-dir"] ?? findProjectRoot(process.cwd());
+    const baseDir = projectDir
+      ? join(projectDir, ".agent-memory")
+      : join(process.cwd(), ".agent-memory");
+
+    switch (step) {
+      case "split-files": {
+        const results = migrateSplitFiles(baseDir);
+        console.log(JSON.stringify(results, null, 2));
+        break;
+      }
+      default:
+        console.error(`Unknown migration step: ${step}. Available: split-files`);
+        process.exit(1);
+    }
     process.exit(0);
   }
 

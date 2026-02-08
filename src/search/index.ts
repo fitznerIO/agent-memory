@@ -332,6 +332,11 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
     "SELECT COUNT(*) as cnt FROM connections WHERE source_id = ? OR target_id = ?",
   );
 
+  // PRD 10.2: Decay connection-awareness — exclude supersedes/superseded_by
+  const selectActiveConnCount = db.query<{ cnt: number }, [string, string]>(
+    "SELECT COUNT(*) as cnt FROM connections WHERE (source_id = ? OR target_id = ?) AND type NOT IN ('supersedes', 'superseded_by')",
+  );
+
   // -- v2-lite: ID prefix mapping ---------------------------------------------
 
   const TYPE_PREFIX: Record<string, string> = {
@@ -675,6 +680,11 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
 
     async getConnectionCount(id: string): Promise<number> {
       const row = selectConnCount.get(id, id);
+      return row?.cnt ?? 0;
+    },
+
+    async getActiveConnectionCount(id: string): Promise<number> {
+      const row = selectActiveConnCount.get(id, id);
       return row?.cnt ?? 0;
     },
   };

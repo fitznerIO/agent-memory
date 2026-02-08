@@ -61,4 +61,7 @@ export interface SearchIndex {
     types?: ConnectionType[],
   ): Promise<ConnectionRow[]>;
   getConnectionCount(id: string): Promise<number>;
+
+  // v2-lite: Decay connection-awareness (PRD 10.2)
+  getActiveConnectionCount(id: string): Promise<number>;
 }

@@ -120,6 +120,11 @@ export interface MemoryUpdateOutput {
   success: boolean;
   diff: string;
   indexed: boolean;
+  suggested_connections?: Array<{
+    id: string;
+    title: string;
+    relevance: number;
+  }>; // v2-lite: returned on significant content change
 }
 
 export interface MemoryForgetInput {

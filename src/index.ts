@@ -467,20 +467,89 @@ export function createMemorySystem(
         input.content,
       );
 
+      let indexed = false;
       try {
         await indexMemoryWithEmbedding(updated, project.searchIndex);
-        return {
-          success: true,
-          diff: `Updated: ${input.reason}. Previous length: ${oldContent.length}, new length: ${input.content.length}`,
-          indexed: true,
-        };
+        indexed = true;
       } catch {
-        return {
-          success: true,
-          diff: `Updated: ${input.reason}. Previous length: ${oldContent.length}, new length: ${input.content.length}`,
-          indexed: false,
-        };
+        // Indexing failed, continue
       }
+
+      const diff = `Updated: ${input.reason}. Previous length: ${oldContent.length}, new length: ${input.content.length}`;
+
+      // v2-lite: Connection discovery on significant change (>20% content diff)
+      const lengthRatio =
+        oldContent.length > 0
+          ? Math.abs(input.content.length - oldContent.length) /
+            oldContent.length
+          : 1;
+
+      let suggestedConnections:
+        | MemoryUpdateOutput["suggested_connections"]
+        | undefined;
+
+      if (lengthRatio > 0.2 && indexed) {
+        try {
+          const queryEmbed = await embedding.embed(input.content);
+
+          let ftsResults: SearchResult[] = [];
+          try {
+            const searchQuery = input.content.slice(0, 200);
+            ftsResults = await project.searchIndex.searchText(searchQuery, 5);
+          } catch {
+            // FTS might fail with special characters
+          }
+
+          const vecResults = await project.searchIndex.searchVector(
+            queryEmbed.vector,
+            5,
+          );
+
+          const candidates = new Map<
+            string,
+            { id: string; title: string; relevance: number }
+          >();
+          const currentId = current.metadata.id;
+
+          for (const r of ftsResults) {
+            if (r.memory.metadata.id === currentId) continue;
+            const score = r.score * 0.5;
+            const existing = candidates.get(r.memory.metadata.id);
+            if (!existing || existing.relevance < score) {
+              candidates.set(r.memory.metadata.id, {
+                id: r.memory.metadata.id,
+                title: r.memory.metadata.title,
+                relevance: score,
+              });
+            }
+          }
+
+          for (const r of vecResults) {
+            if (r.memory.metadata.id === currentId) continue;
+            const existing = candidates.get(r.memory.metadata.id);
+            if (!existing || existing.relevance < r.score) {
+              candidates.set(r.memory.metadata.id, {
+                id: r.memory.metadata.id,
+                title: r.memory.metadata.title,
+                relevance: r.score,
+              });
+            }
+          }
+
+          suggestedConnections = [...candidates.values()]
+            .sort((a, b) => b.relevance - a.relevance)
+            .slice(0, 5);
+        } catch {
+          // Discovery is best-effort
+        }
+      }
+
+      return {
+        success: true,
+        diff,
+        indexed,
+        suggested_connections: suggestedConnections,
+      };
     },
 
     async forget(input: MemoryForgetInput): Promise<MemoryForgetOutput> {
