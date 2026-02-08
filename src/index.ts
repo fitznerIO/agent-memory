@@ -6,6 +6,7 @@ import { createEmbeddingEngine } from "./embedding/engine.ts";
 import type { EmbeddingEngine } from "./embedding/types.ts";
 import { createGitManager } from "./git/manager.ts";
 import type { GitManager } from "./git/types.ts";
+import { parseMarkdown, serializeMarkdown } from "./memory/parser.ts";
 import { createMemoryStore } from "./memory/store.ts";
 import type { MemoryStore } from "./memory/types.ts";
 import { createSearchIndex } from "./search/index.ts";
@@ -16,10 +17,16 @@ export { findProjectRoot } from "./shared/config.ts";
 import { type MemoryConfig, createDefaultConfig } from "./shared/config.ts";
 export type {
   CommitType,
+  Connection,
+  ConnectionType,
   Importance,
+  KnowledgeEntry,
+  KnowledgeType,
   Memory,
   MemoryCommitInput,
   MemoryCommitOutput,
+  MemoryConnectInput,
+  MemoryConnectOutput,
   MemoryForgetInput,
   MemoryForgetOutput,
   MemoryMetadata,
@@ -29,6 +36,10 @@ export type {
   MemoryReadOutput,
   MemorySearchInput,
   MemorySearchOutput,
+  MemoryStoreInput,
+  MemoryStoreOutput,
+  MemoryTraverseInput,
+  MemoryTraverseOutput,
   MemoryType,
   MemoryUpdateInput,
   MemoryUpdateOutput,
@@ -38,9 +49,12 @@ export type {
 
 import type {
   CommitType,
+  ConnectionType,
   Memory,
   MemoryCommitInput,
   MemoryCommitOutput,
+  MemoryConnectInput,
+  MemoryConnectOutput,
   MemoryForgetInput,
   MemoryForgetOutput,
   MemoryNoteInput,
@@ -49,6 +63,10 @@ import type {
   MemoryReadOutput,
   MemorySearchInput,
   MemorySearchOutput,
+  MemoryStoreInput,
+  MemoryStoreOutput,
+  MemoryTraverseInput,
+  MemoryTraverseOutput,
   MemoryUpdateInput,
   MemoryUpdateOutput,
   SearchResult,
@@ -56,13 +74,18 @@ import type {
 } from "./shared/types.ts";
 
 export interface MemorySystem {
-  // Tools API
+  // v1 Tools API
   note(input: MemoryNoteInput): Promise<MemoryNoteOutput>;
   search(input: MemorySearchInput): Promise<MemorySearchOutput>;
   read(input: MemoryReadInput): Promise<MemoryReadOutput>;
   update(input: MemoryUpdateInput): Promise<MemoryUpdateOutput>;
   forget(input: MemoryForgetInput): Promise<MemoryForgetOutput>;
   commit(input: MemoryCommitInput): Promise<MemoryCommitOutput>;
+
+  // v2-lite Tools API
+  memoryStore(input: MemoryStoreInput): Promise<MemoryStoreOutput>;
+  memoryConnect(input: MemoryConnectInput): Promise<MemoryConnectOutput>;
+  memoryTraverse(input: MemoryTraverseInput): Promise<MemoryTraverseOutput>;
 
   // Lifecycle
   start(): Promise<void>;
@@ -112,6 +135,84 @@ function ensureGitignore(memoryDir: string): void {
     );
   } else {
     writeFileSync(gitignorePath, `# Agent memory store\n${entry}/\n`);
+  }
+}
+
+// -- v2-lite helpers ----------------------------------------------------------
+
+/** Map v2-lite KnowledgeType to directory path relative to baseDir. */
+function knowledgeTypeDir(type: string): string {
+  switch (type) {
+    case "decision":
+      return "semantic/decisions";
+    case "entity":
+      return "semantic/entities";
+    case "incident":
+      return "episodic/incidents";
+    case "pattern":
+      return "procedural/patterns";
+    case "workflow":
+      return "procedural/workflows";
+    case "note":
+      return "semantic/notes";
+    case "session":
+      return "episodic/sessions";
+    default:
+      return "semantic";
+  }
+}
+
+/** Map v2-lite KnowledgeType to v1 MemoryType for the memories table. */
+function knowledgeToMemoryType(type: string): string {
+  switch (type) {
+    case "decision":
+    case "entity":
+    case "note":
+      return "semantic";
+    case "incident":
+    case "session":
+      return "episodic";
+    case "pattern":
+    case "workflow":
+      return "procedural";
+    default:
+      return "semantic";
+  }
+}
+
+/** Convert title to URL-friendly slug. */
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[äöüß]/g, (c) => {
+      const map: Record<string, string> = {
+        ä: "ae",
+        ö: "oe",
+        ü: "ue",
+        ß: "ss",
+      };
+      return map[c] ?? c;
+    })
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50);
+}
+
+/** Get the inverse connection type. */
+function getInverseType(type: ConnectionType): string {
+  switch (type) {
+    case "related":
+      return "related";
+    case "builds_on":
+      return "extended_by";
+    case "contradicts":
+      return "contradicts";
+    case "part_of":
+      return "contains";
+    case "supersedes":
+      return "superseded_by";
+    default:
+      return "related";
   }
 }
 
@@ -167,6 +268,58 @@ export function createMemorySystem(
   }
 
   /**
+   * Update a knowledge file's frontmatter to add a connection.
+   * Looks up the file path from the knowledge table.
+   */
+  async function updateFrontmatterConnections(
+    entryId: string,
+    targetId: string,
+    connType: string,
+    note?: string,
+  ): Promise<void> {
+    const entry = await project.searchIndex.getKnowledgeById(entryId);
+    if (!entry) return;
+
+    const absPath = join(config.baseDir, entry.filePath);
+    try {
+      const file = Bun.file(absPath);
+      if (!(await file.exists())) return;
+
+      // parseMarkdown/serializeMarkdown imported at top level
+      const raw = await file.text();
+      const doc = parseMarkdown(raw);
+
+      // Get existing connections or initialize
+      const connections = (
+        doc.frontmatter.connections as Array<Record<string, unknown>>
+      ) ?? [];
+
+      // Check if connection already exists
+      const exists = connections.some(
+        (c) =>
+          c.target === targetId &&
+          c.type === connType,
+      );
+
+      if (!exists) {
+        const newConn: Record<string, unknown> = {
+          target: targetId,
+          type: connType,
+        };
+        if (note) newConn.note = note;
+        connections.push(newConn);
+        doc.frontmatter.connections = connections;
+        doc.frontmatter.updated = new Date().toISOString().slice(0, 10);
+
+        const serialized = serializeMarkdown(doc);
+        writeFileSync(absPath, serialized);
+      }
+    } catch {
+      // Best-effort: file might not exist yet during migration
+    }
+  }
+
+  /**
    * Merge project and global search results.
    * Project results are preferred at equal scores.
    */
@@ -216,11 +369,12 @@ export function createMemorySystem(
         input.content.length <= 60
           ? input.content
           : `${input.content.slice(0, 57)}...`;
+      const tags = (input.tags ?? []).map((t) => t.toLowerCase());
       const memory = await project.store.create({
         metadata: {
           title,
           type: input.type,
-          tags: [],
+          tags,
           importance: input.importance,
           source: "agent-session",
         },
@@ -376,6 +530,279 @@ export function createMemorySystem(
         commitHash: hash,
         filesChanged,
       };
+    },
+
+    // -- v2-lite tools --------------------------------------------------------
+
+    async memoryStore(
+      input: MemoryStoreInput,
+    ): Promise<MemoryStoreOutput> {
+      const now = new Date();
+      const isoNow = now.toISOString();
+
+      // Generate sequential ID
+      const id = await project.searchIndex.getNextSequentialId(input.type);
+      const slug = slugify(input.title);
+      const typeDir = knowledgeTypeDir(input.type);
+      const fileName = `${id}-${slug}.md`;
+      const relFilePath = join(typeDir, fileName);
+      const absFilePath = join(config.baseDir, relFilePath);
+
+      // Normalize tags to lowercase
+      const tags = (input.tags ?? []).map((t) => t.toLowerCase());
+
+      // Build connections for frontmatter
+      const connections = (input.connections ?? []).map((c) => ({
+        target: c.target,
+        type: c.type,
+        note: c.note,
+      }));
+
+      // Build frontmatter
+      const frontmatter: Record<string, unknown> = {
+        id,
+        title: input.title,
+        type: input.type,
+        tags,
+        created: isoNow.slice(0, 10),
+        updated: isoNow.slice(0, 10),
+        connections,
+      };
+
+      // Ensure directory exists
+      const dir = dirname(absFilePath);
+      mkdirSync(dir, { recursive: true });
+
+      // Serialize and write markdown file
+      // serializeMarkdown imported at top level
+      const serialized = serializeMarkdown({
+        frontmatter,
+        body: input.content,
+      });
+      writeFileSync(absFilePath, serialized);
+
+      // Index in knowledge table
+      await project.searchIndex.indexKnowledge({
+        id,
+        title: input.title,
+        type: input.type,
+        filePath: relFilePath,
+        createdAt: isoNow,
+        updatedAt: isoNow,
+        accessCount: 0,
+        tags,
+      });
+
+      // Insert tags
+      if (tags.length > 0) {
+        await project.searchIndex.insertTags(id, tags);
+      }
+
+      // Also index in v1 memories table for search compatibility
+      const memoryObj: Memory = {
+        metadata: {
+          id,
+          title: input.title,
+          type: knowledgeToMemoryType(input.type) as Memory["metadata"]["type"],
+          tags,
+          importance: "medium",
+          createdAt: now.getTime(),
+          updatedAt: now.getTime(),
+          lastAccessedAt: now.getTime(),
+          source: "memory-store",
+        },
+        content: input.content,
+        filePath: relFilePath,
+      };
+      await indexMemoryWithEmbedding(memoryObj, project.searchIndex);
+
+      // Handle initial connections if provided
+      for (const conn of input.connections ?? []) {
+        const inverseType = getInverseType(conn.type);
+        // Insert forward connection
+        await project.searchIndex.insertConnection(
+          id,
+          conn.target,
+          conn.type,
+          conn.note,
+        );
+        // Insert inverse connection
+        await project.searchIndex.insertConnection(
+          conn.target,
+          id,
+          inverseType as ConnectionType,
+          conn.note,
+        );
+        // Update target file's frontmatter with inverse connection
+        await updateFrontmatterConnections(
+          conn.target,
+          id,
+          inverseType,
+          conn.note,
+        );
+      }
+
+      // Connection discovery: find related entries
+      let suggestedConnections: MemoryStoreOutput["suggested_connections"] = [];
+      try {
+        const queryEmbed = await embedding.embed(input.content);
+
+        // FTS search
+        let ftsResults: SearchResult[] = [];
+        try {
+          // Use title + first 100 chars of content as search query
+          const searchQuery = `${input.title} ${input.content.slice(0, 100)}`;
+          ftsResults = await project.searchIndex.searchText(searchQuery, 5);
+        } catch {
+          // FTS might fail with special characters
+        }
+
+        // Vector search
+        const vecResults = await project.searchIndex.searchVector(
+          queryEmbed.vector,
+          5,
+        );
+
+        // Deduplicate and rank
+        const candidates = new Map<
+          string,
+          { id: string; title: string; relevance: number }
+        >();
+
+        for (const r of ftsResults) {
+          if (r.memory.metadata.id === id) continue;
+          const existing = candidates.get(r.memory.metadata.id);
+          const score = r.score * 0.5;
+          if (!existing || existing.relevance < score) {
+            candidates.set(r.memory.metadata.id, {
+              id: r.memory.metadata.id,
+              title: r.memory.metadata.title,
+              relevance: score,
+            });
+          }
+        }
+
+        for (const r of vecResults) {
+          if (r.memory.metadata.id === id) continue;
+          const existing = candidates.get(r.memory.metadata.id);
+          const score = r.score;
+          if (!existing || existing.relevance < score) {
+            candidates.set(r.memory.metadata.id, {
+              id: r.memory.metadata.id,
+              title: r.memory.metadata.title,
+              relevance: score,
+            });
+          }
+        }
+
+        suggestedConnections = [...candidates.values()]
+          .sort((a, b) => b.relevance - a.relevance)
+          .slice(0, 5);
+      } catch {
+        // Discovery is best-effort
+      }
+
+      // Get existing tags for autocomplete
+      const existingTags = await project.searchIndex.getExistingTags();
+
+      return {
+        id,
+        file_path: relFilePath,
+        suggested_connections: suggestedConnections,
+        existing_tags: existingTags,
+      };
+    },
+
+    async memoryConnect(
+      input: MemoryConnectInput,
+    ): Promise<MemoryConnectOutput> {
+      const inverseType = getInverseType(input.type);
+
+      // Insert forward connection in SQLite
+      await project.searchIndex.insertConnection(
+        input.source_id,
+        input.target_id,
+        input.type,
+        input.note,
+      );
+
+      // Insert inverse connection in SQLite
+      await project.searchIndex.insertConnection(
+        input.target_id,
+        input.source_id,
+        inverseType as ConnectionType,
+        input.note,
+      );
+
+      // Update source file frontmatter
+      await updateFrontmatterConnections(
+        input.source_id,
+        input.target_id,
+        input.type,
+        input.note,
+      );
+
+      // Update target file frontmatter (inverse)
+      await updateFrontmatterConnections(
+        input.target_id,
+        input.source_id,
+        inverseType,
+        input.note,
+      );
+
+      return {
+        success: true,
+        inverse_type: inverseType,
+      };
+    },
+
+    async memoryTraverse(
+      input: MemoryTraverseInput,
+    ): Promise<MemoryTraverseOutput> {
+      const depth = Math.min(input.depth ?? 1, 2);
+      const results: MemoryTraverseOutput["results"] = [];
+      const visited = new Set<string>([input.start_id]);
+
+      // BFS traversal
+      let currentLevel = [input.start_id];
+
+      for (let d = 1; d <= depth; d++) {
+        const nextLevel: string[] = [];
+
+        for (const nodeId of currentLevel) {
+          const connections = await project.searchIndex.getConnections(
+            nodeId,
+            input.direction,
+            input.types,
+          );
+
+          for (const conn of connections) {
+            const neighborId =
+              conn.source_id === nodeId ? conn.target_id : conn.source_id;
+
+            if (visited.has(neighborId)) continue;
+            visited.add(neighborId);
+
+            // Look up knowledge entry for title and type
+            const entry =
+              await project.searchIndex.getKnowledgeById(neighborId);
+
+            results.push({
+              id: neighborId,
+              title: entry?.title ?? neighborId,
+              type: entry?.type ?? "unknown",
+              connection_type: conn.type,
+              distance: d,
+            });
+
+            nextLevel.push(neighborId);
+          }
+        }
+
+        currentLevel = nextLevel;
+      }
+
+      return { results };
     },
 
     async start(): Promise<void> {

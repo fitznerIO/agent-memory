@@ -4,11 +4,15 @@ import { dirname, join } from "node:path";
 import * as sqliteVec from "sqlite-vec";
 import type { MemoryConfig } from "../shared/config.ts";
 import type {
+  Connection,
+  ConnectionType,
   HybridSearchOptions,
+  KnowledgeEntry,
+  KnowledgeType,
   Memory,
   SearchResult,
 } from "../shared/types.ts";
-import type { IndexStats, SearchIndex } from "./types.ts";
+import type { ConnectionRow, IndexStats, SearchIndex } from "./types.ts";
 
 /**
  * Row shape returned from the memories table.
@@ -258,6 +262,94 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
     deleteMemory.run(id);
   });
 
+  // -- v2-lite: Knowledge prepared statements ---------------------------------
+
+  const insertKnowledge = db.query(`
+    INSERT OR REPLACE INTO knowledge (id, title, type, file_path, created_at, updated_at, last_accessed, access_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const selectKnowledge = db.query<
+    {
+      id: string;
+      title: string;
+      type: string;
+      file_path: string;
+      created_at: string;
+      updated_at: string;
+      last_accessed: string | null;
+      access_count: number;
+    },
+    [string]
+  >("SELECT * FROM knowledge WHERE id = ?");
+
+  const deleteKnowledge = db.query("DELETE FROM knowledge WHERE id = ?");
+
+  const selectMaxIdForType = db.query<{ max_id: string | null }, [string]>(
+    "SELECT MAX(id) as max_id FROM knowledge WHERE type = ?",
+  );
+
+  // -- v2-lite: Tag prepared statements ---------------------------------------
+
+  const insertTag = db.query(
+    "INSERT OR IGNORE INTO entry_tags (entry_id, tag) VALUES (?, ?)",
+  );
+
+  const deleteTags = db.query("DELETE FROM entry_tags WHERE entry_id = ?");
+
+  const selectAllTags = db.query<{ tag: string }, []>(
+    "SELECT DISTINCT tag FROM entry_tags ORDER BY tag",
+  );
+
+  const selectTagsByEntry = db.query<{ tag: string }, [string]>(
+    "SELECT tag FROM entry_tags WHERE entry_id = ? ORDER BY tag",
+  );
+
+  // -- v2-lite: Connection prepared statements --------------------------------
+
+  const insertConn = db.query(`
+    INSERT OR REPLACE INTO connections (source_id, target_id, type, note, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+
+  const deleteConnByEntry = db.query(
+    "DELETE FROM connections WHERE source_id = ? OR target_id = ?",
+  );
+
+  const selectConnOutgoing = db.query<ConnectionRow, [string]>(
+    "SELECT * FROM connections WHERE source_id = ?",
+  );
+
+  const selectConnIncoming = db.query<ConnectionRow, [string]>(
+    "SELECT * FROM connections WHERE target_id = ?",
+  );
+
+  const selectConnBoth = db.query<ConnectionRow, [string, string]>(
+    "SELECT * FROM connections WHERE source_id = ? OR target_id = ?",
+  );
+
+  const selectConnCount = db.query<{ cnt: number }, [string, string]>(
+    "SELECT COUNT(*) as cnt FROM connections WHERE source_id = ? OR target_id = ?",
+  );
+
+  // -- v2-lite: ID prefix mapping ---------------------------------------------
+
+  const TYPE_PREFIX: Record<string, string> = {
+    decision: "dec",
+    incident: "inc",
+    entity: "entity",
+    pattern: "pat",
+    workflow: "wf",
+    note: "note",
+    session: "session",
+  };
+
+  function parseSequentialNumber(id: string): number {
+    const match = id.match(/-(\d+)$/);
+    const numStr = match?.[1];
+    return numStr ? Number.parseInt(numStr, 10) : 0;
+  }
+
   return {
     async index(memory: Memory): Promise<void> {
       // Extract embedding from memory if it is attached (duck typing)
@@ -455,6 +547,135 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
 
     close(): void {
       db.close();
+    },
+
+    // -- v2-lite: Knowledge operations ----------------------------------------
+
+    async indexKnowledge(
+      entry: Omit<KnowledgeEntry, "connections">,
+    ): Promise<void> {
+      insertKnowledge.run(
+        entry.id,
+        entry.title,
+        entry.type,
+        entry.filePath,
+        entry.createdAt,
+        entry.updatedAt,
+        entry.lastAccessed ?? null,
+        entry.accessCount,
+      );
+    },
+
+    async removeKnowledge(id: string): Promise<void> {
+      deleteTags.run(id);
+      deleteConnByEntry.run(id, id);
+      deleteKnowledge.run(id);
+    },
+
+    async getKnowledgeById(id: string): Promise<KnowledgeEntry | null> {
+      const row = selectKnowledge.get(id);
+      if (!row) return null;
+
+      const tags = selectTagsByEntry.all(id).map((r) => r.tag);
+      const connRows = selectConnBoth.all(id, id);
+      const connections: Connection[] = connRows.map((c) => ({
+        target: c.source_id === id ? c.target_id : c.source_id,
+        type: c.type as Connection["type"],
+        note: c.note ?? undefined,
+      }));
+
+      return {
+        id: row.id,
+        title: row.title,
+        type: row.type as KnowledgeType,
+        filePath: row.file_path,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        lastAccessed: row.last_accessed ?? undefined,
+        accessCount: row.access_count,
+        tags,
+        connections,
+      };
+    },
+
+    async getNextSequentialId(type: KnowledgeType): Promise<string> {
+      const prefix = TYPE_PREFIX[type] ?? type;
+      const row = selectMaxIdForType.get(type);
+
+      if (!row?.max_id) {
+        return `${prefix}-001`;
+      }
+
+      const currentMax = parseSequentialNumber(row.max_id);
+      const next = currentMax + 1;
+      return `${prefix}-${String(next).padStart(3, "0")}`;
+    },
+
+    // -- v2-lite: Tag operations ----------------------------------------------
+
+    async insertTags(entryId: string, tags: string[]): Promise<void> {
+      for (const tag of tags) {
+        insertTag.run(entryId, tag.toLowerCase());
+      }
+    },
+
+    async removeTags(entryId: string): Promise<void> {
+      deleteTags.run(entryId);
+    },
+
+    async getExistingTags(): Promise<string[]> {
+      return selectAllTags.all().map((r) => r.tag);
+    },
+
+    async getTagsByEntryId(entryId: string): Promise<string[]> {
+      return selectTagsByEntry.all(entryId).map((r) => r.tag);
+    },
+
+    // -- v2-lite: Connection operations ---------------------------------------
+
+    async insertConnection(
+      sourceId: string,
+      targetId: string,
+      type: ConnectionType,
+      note?: string,
+    ): Promise<void> {
+      const now = new Date().toISOString();
+      insertConn.run(sourceId, targetId, type, note ?? null, now);
+    },
+
+    async removeConnections(entryId: string): Promise<void> {
+      deleteConnByEntry.run(entryId, entryId);
+    },
+
+    async getConnections(
+      id: string,
+      direction: "outgoing" | "incoming" | "both",
+      types?: ConnectionType[],
+    ): Promise<ConnectionRow[]> {
+      let rows: ConnectionRow[];
+      switch (direction) {
+        case "outgoing":
+          rows = selectConnOutgoing.all(id);
+          break;
+        case "incoming":
+          rows = selectConnIncoming.all(id);
+          break;
+        case "both":
+          rows = selectConnBoth.all(id, id);
+          break;
+      }
+
+      if (types && types.length > 0) {
+        const typeSet = new Set<string>(types);
+        rows = rows.filter((r) => typeSet.has(r.type));
+      }
+
+      return rows;
+    },
+
+    async getConnectionCount(id: string): Promise<number> {
+      const row = selectConnCount.get(id, id);
+      return row?.cnt ?? 0;
     },
   };
 }

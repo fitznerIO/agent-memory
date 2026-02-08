@@ -78,12 +78,15 @@ async function main(): Promise<void> {
     console.log(`agent-memory — Persistent memory for AI agents
 
 Commands:
-  note     Save a note to memory
-  search   Hybrid search across all memories
-  read     Read a specific memory file
-  update   Update memory content
-  forget   Delete matching memories
-  commit   Git commit pending changes
+  note       Save a note to memory
+  search     Hybrid search across all memories
+  read       Read a specific memory file
+  update     Update memory content
+  forget     Delete matching memories
+  commit     Git commit pending changes
+  store      Create individual knowledge file (v2-lite)
+  connect    Create bidirectional connection (v2-lite)
+  traverse   Navigate knowledge network (v2-lite)
 
 Global flags:
   --project-dir <path>  Project root (auto-detected from .git/package.json)
@@ -95,6 +98,9 @@ Examples:
   agent-memory note --content "User prefers TypeScript" --type semantic --importance medium
   agent-memory search --query "TypeScript preferences" --limit 5
   agent-memory read --path "semantic/abc123.md"
+  agent-memory store --title "Webhook statt Polling" --type decision --content "..."
+  agent-memory connect --source dec-001 --target inc-001 --type related
+  agent-memory traverse --start dec-001 --direction both
   agent-memory commit --message "Session notes" --type consolidate`);
     process.exit(0);
   }
@@ -173,6 +179,54 @@ Examples:
             | "procedural"
             | "consolidate"
             | "archive",
+        });
+        console.log(JSON.stringify(result, null, 2));
+        break;
+      }
+
+      case "store": {
+        const result = await system.memoryStore({
+          title: requireFlag(flags, "title"),
+          type: (flags.type ?? "note") as
+            | "decision"
+            | "incident"
+            | "entity"
+            | "pattern"
+            | "workflow"
+            | "note",
+          content: requireFlag(flags, "content"),
+          tags: flags.tags ? flags.tags.split(",").map((t) => t.trim()) : undefined,
+        });
+        console.log(JSON.stringify(result, null, 2));
+        break;
+      }
+
+      case "connect": {
+        const result = await system.memoryConnect({
+          source_id: requireFlag(flags, "source"),
+          target_id: requireFlag(flags, "target"),
+          type: (flags.type ?? "related") as
+            | "related"
+            | "builds_on"
+            | "contradicts"
+            | "part_of"
+            | "supersedes",
+          note: flags.note,
+        });
+        console.log(JSON.stringify(result, null, 2));
+        break;
+      }
+
+      case "traverse": {
+        const result = await system.memoryTraverse({
+          start_id: requireFlag(flags, "start"),
+          direction: (flags.direction ?? "both") as
+            | "outgoing"
+            | "incoming"
+            | "both",
+          depth: flags.depth
+            ? Number.parseInt(flags.depth, 10)
+            : undefined,
         });
         console.log(JSON.stringify(result, null, 2));
         break;

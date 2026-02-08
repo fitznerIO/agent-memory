@@ -66,6 +66,7 @@ export interface MemoryNoteInput {
   content: string;
   type: "semantic" | "episodic" | "procedural";
   importance: Importance;
+  tags?: string[]; // v2-lite: namespace tags
 }
 
 export interface MemoryNoteOutput {
@@ -79,6 +80,8 @@ export interface MemorySearchInput {
   type?: MemoryType | "all";
   limit?: number;
   minScore?: number;
+  tags?: string[]; // v2-lite: namespace tag filter (hierarchical: "tech/" matches "tech/ai/...")
+  connected_to?: string; // v2-lite: only entries connected to this ID
 }
 
 export interface MemorySearchOutput {
@@ -89,6 +92,10 @@ export interface MemorySearchOutput {
     type: string;
     lastAccessed: string;
     storeSource: StoreSource;
+    id?: string; // v2-lite
+    title?: string; // v2-lite
+    tags?: string[]; // v2-lite
+    connections?: Connection[]; // v2-lite
   }>;
   totalFound: number;
 }
@@ -137,3 +144,108 @@ export interface MemoryCommitOutput {
   commitHash: string;
   filesChanged: number;
 }
+
+// ---------------------------------------------------------------------------
+// v2-lite Types
+// ---------------------------------------------------------------------------
+
+export type KnowledgeType =
+  | "decision"
+  | "incident"
+  | "entity"
+  | "pattern"
+  | "workflow"
+  | "note"
+  | "session";
+
+export type ConnectionType =
+  | "related"
+  | "builds_on"
+  | "contradicts"
+  | "part_of"
+  | "supersedes";
+
+export type InverseConnectionType =
+  | "related"
+  | "extended_by"
+  | "contradicts"
+  | "contains"
+  | "superseded_by";
+
+export interface Connection {
+  target: string;
+  type: ConnectionType | InverseConnectionType;
+  note?: string;
+}
+
+export interface KnowledgeEntry {
+  id: string;
+  title: string;
+  type: KnowledgeType;
+  filePath: string;
+  createdAt: string;
+  updatedAt: string;
+  lastAccessed?: string;
+  accessCount: number;
+  tags: string[];
+  connections: Connection[];
+}
+
+// Tool I/O for memory_store (v2-lite)
+
+export interface MemoryStoreInput {
+  title: string;
+  type: KnowledgeType;
+  content: string;
+  tags?: string[];
+  connections?: Array<{
+    target: string;
+    type: ConnectionType;
+    note?: string;
+  }>;
+}
+
+export interface MemoryStoreOutput {
+  id: string;
+  file_path: string;
+  suggested_connections: Array<{
+    id: string;
+    title: string;
+    relevance: number;
+  }>;
+  existing_tags: string[];
+}
+
+// Tool I/O for memory_connect (v2-lite)
+
+export interface MemoryConnectInput {
+  source_id: string;
+  target_id: string;
+  type: ConnectionType;
+  note?: string;
+}
+
+export interface MemoryConnectOutput {
+  success: boolean;
+  inverse_type: string;
+}
+
+// Tool I/O for memory_traverse (v2-lite)
+
+export interface MemoryTraverseInput {
+  start_id: string;
+  direction: "outgoing" | "incoming" | "both";
+  types?: ConnectionType[];
+  depth?: number;
+}
+
+export interface MemoryTraverseOutput {
+  results: Array<{
+    id: string;
+    title: string;
+    type: string;
+    connection_type: string;
+    distance: number;
+  }>;
+}
+
