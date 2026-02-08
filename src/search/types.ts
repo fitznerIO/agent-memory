@@ -1,6 +1,7 @@
 import type {
   ConnectionType,
   HybridSearchOptions,
+  InverseConnectionType,
   KnowledgeEntry,
   KnowledgeType,
   Memory,
@@ -51,7 +52,7 @@ export interface SearchIndex {
   insertConnection(
     sourceId: string,
     targetId: string,
-    type: ConnectionType,
+    type: ConnectionType | InverseConnectionType,
     note?: string,
   ): Promise<void>;
   removeConnections(entryId: string): Promise<void>;

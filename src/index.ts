@@ -13,6 +13,12 @@ import { createSearchIndex } from "./search/index.ts";
 import type { SearchIndex } from "./search/types.ts";
 export type { MemoryConfig } from "./shared/config.ts";
 export { findProjectRoot } from "./shared/config.ts";
+import {
+  getInverseType,
+  knowledgeToMemoryType,
+  knowledgeTypeDir,
+  slugify,
+} from "./shared/utils.ts";
 
 import { type MemoryConfig, createDefaultConfig } from "./shared/config.ts";
 export type {
@@ -49,7 +55,6 @@ export type {
 
 import type {
   CommitType,
-  ConnectionType,
   Memory,
   MemoryCommitInput,
   MemoryCommitOutput,
@@ -138,84 +143,6 @@ function ensureGitignore(memoryDir: string): void {
   }
 }
 
-// -- v2-lite helpers ----------------------------------------------------------
-
-/** Map v2-lite KnowledgeType to directory path relative to baseDir. */
-function knowledgeTypeDir(type: string): string {
-  switch (type) {
-    case "decision":
-      return "semantic/decisions";
-    case "entity":
-      return "semantic/entities";
-    case "incident":
-      return "episodic/incidents";
-    case "pattern":
-      return "procedural/patterns";
-    case "workflow":
-      return "procedural/workflows";
-    case "note":
-      return "semantic/notes";
-    case "session":
-      return "episodic/sessions";
-    default:
-      return "semantic";
-  }
-}
-
-/** Map v2-lite KnowledgeType to v1 MemoryType for the memories table. */
-function knowledgeToMemoryType(type: string): string {
-  switch (type) {
-    case "decision":
-    case "entity":
-    case "note":
-      return "semantic";
-    case "incident":
-    case "session":
-      return "episodic";
-    case "pattern":
-    case "workflow":
-      return "procedural";
-    default:
-      return "semantic";
-  }
-}
-
-/** Convert title to URL-friendly slug. */
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[äöüß]/g, (c) => {
-      const map: Record<string, string> = {
-        ä: "ae",
-        ö: "oe",
-        ü: "ue",
-        ß: "ss",
-      };
-      return map[c] ?? c;
-    })
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 50);
-}
-
-/** Get the inverse connection type. */
-function getInverseType(type: ConnectionType): string {
-  switch (type) {
-    case "related":
-      return "related";
-    case "builds_on":
-      return "extended_by";
-    case "contradicts":
-      return "contradicts";
-    case "part_of":
-      return "contains";
-    case "supersedes":
-      return "superseded_by";
-    default:
-      return "related";
-  }
-}
-
 function createModuleSet(
   config: MemoryConfig,
   overridePaths?: { baseDir: string; sqlitePath: string },
@@ -268,6 +195,69 @@ export function createMemorySystem(
   }
 
   /**
+   * Discover similar entries via FTS + vector search, deduplicate, rank, and
+   * return top candidates. Used by memoryStore() and update() for connection
+   * discovery suggestions.
+   */
+  async function findSimilarEntries(
+    searchQuery: string,
+    content: string,
+    excludeId: string,
+    limit = 5,
+  ): Promise<Array<{ id: string; title: string; relevance: number }>> {
+    const queryEmbed = await embedding.embed(content);
+
+    let ftsResults: SearchResult[] = [];
+    try {
+      ftsResults = await project.searchIndex.searchText(searchQuery, limit);
+    } catch {
+      // FTS can fail on special characters in the query
+    }
+
+    const vecResults = await project.searchIndex.searchVector(
+      queryEmbed.vector,
+      limit,
+    );
+
+    // Merge: FTS scores weighted at 0.5, vector scores at 1.0
+    const candidates = new Map<
+      string,
+      { id: string; title: string; relevance: number }
+    >();
+
+    for (const r of ftsResults) {
+      const id = r.memory.metadata.id;
+      if (id === excludeId) continue;
+      const score = r.score * 0.5;
+      const existing = candidates.get(id);
+      if (!existing || existing.relevance < score) {
+        candidates.set(id, {
+          id,
+          title: r.memory.metadata.title,
+          relevance: score,
+        });
+      }
+    }
+
+    for (const r of vecResults) {
+      const id = r.memory.metadata.id;
+      if (id === excludeId) continue;
+      const existing = candidates.get(id);
+      if (!existing || existing.relevance < r.score) {
+        candidates.set(id, {
+          id,
+          title: r.memory.metadata.title,
+          relevance: r.score,
+        });
+      }
+    }
+
+    return [...candidates.values()]
+      .sort((a, b) => b.relevance - a.relevance)
+      .slice(0, limit);
+  }
+
+  /**
    * Update a knowledge file's frontmatter to add a connection.
    * Looks up the file path from the knowledge table.
    */
@@ -285,7 +275,6 @@ export function createMemorySystem(
       const file = Bun.file(absPath);
       if (!(await file.exists())) return;
 
-      // parseMarkdown/serializeMarkdown imported at top level
       const raw = await file.text();
       const doc = parseMarkdown(raw);
 
@@ -314,8 +303,11 @@ export function createMemorySystem(
         const serialized = serializeMarkdown(doc);
         writeFileSync(absPath, serialized);
       }
-    } catch {
-      // Best-effort: file might not exist yet during migration
+    } catch (err) {
+      // Best-effort: file may not exist yet (e.g. during migration)
+      if (process.env.DEBUG) {
+        console.warn(`[agent-memory] Failed to update frontmatter for ${entryId}:`, err);
+      }
     }
   }
 
@@ -541,55 +533,11 @@ export function createMemorySystem(
 
       if (lengthRatio > 0.2 && indexed) {
         try {
-          const queryEmbed = await embedding.embed(input.content);
-
-          let ftsResults: SearchResult[] = [];
-          try {
-            const searchQuery = input.content.slice(0, 200);
-            ftsResults = await project.searchIndex.searchText(searchQuery, 5);
-          } catch {
-            // FTS might fail with special characters
-          }
-
-          const vecResults = await project.searchIndex.searchVector(
-            queryEmbed.vector,
-            5,
+          suggestedConnections = await findSimilarEntries(
+            input.content.slice(0, 200),
+            input.content,
+            current.metadata.id,
           );
-
-          const candidates = new Map<
-            string,
-            { id: string; title: string; relevance: number }
-          >();
-          const currentId = current.metadata.id;
-
-          for (const r of ftsResults) {
-            if (r.memory.metadata.id === currentId) continue;
-            const score = r.score * 0.5;
-            const existing = candidates.get(r.memory.metadata.id);
-            if (!existing || existing.relevance < score) {
-              candidates.set(r.memory.metadata.id, {
-                id: r.memory.metadata.id,
-                title: r.memory.metadata.title,
-                relevance: score,
-              });
-            }
-          }
-
-          for (const r of vecResults) {
-            if (r.memory.metadata.id === currentId) continue;
-            const existing = candidates.get(r.memory.metadata.id);
-            if (!existing || existing.relevance < r.score) {
-              candidates.set(r.memory.metadata.id, {
-                id: r.memory.metadata.id,
-                title: r.memory.metadata.title,
-                relevance: r.score,
-              });
-            }
-          }
-
-          suggestedConnections = [...candidates.values()]
-            .sort((a, b) => b.relevance - a.relevance)
-            .slice(0, 5);
         } catch {
           // Discovery is best-effort
         }
@@ -693,8 +641,6 @@ export function createMemorySystem(
       const dir = dirname(absFilePath);
       mkdirSync(dir, { recursive: true });
 
-      // Serialize and write markdown file
-      // serializeMarkdown imported at top level
       const serialized = serializeMarkdown({
         frontmatter,
         body: input.content,
@@ -750,7 +696,7 @@ export function createMemorySystem(
         await project.searchIndex.insertConnection(
           conn.target,
           id,
-          inverseType as ConnectionType,
+          inverseType,
           conn.note,
         );
         // Update target file's frontmatter with inverse connection
@@ -765,59 +711,11 @@ export function createMemorySystem(
       // Connection discovery: find related entries
       let suggestedConnections: MemoryStoreOutput["suggested_connections"] = [];
       try {
-        const queryEmbed = await embedding.embed(input.content);
-
-        // FTS search
-        let ftsResults: SearchResult[] = [];
-        try {
-          // Use title + first 100 chars of content as search query
-          const searchQuery = `${input.title} ${input.content.slice(0, 100)}`;
-          ftsResults = await project.searchIndex.searchText(searchQuery, 5);
-        } catch {
-          // FTS might fail with special characters
-        }
-
-        // Vector search
-        const vecResults = await project.searchIndex.searchVector(
-          queryEmbed.vector,
-          5,
+        suggestedConnections = await findSimilarEntries(
+          `${input.title} ${input.content.slice(0, 100)}`,
+          input.content,
+          id,
         );
-
-        // Deduplicate and rank
-        const candidates = new Map<
-          string,
-          { id: string; title: string; relevance: number }
-        >();
-
-        for (const r of ftsResults) {
-          if (r.memory.metadata.id === id) continue;
-          const existing = candidates.get(r.memory.metadata.id);
-          const score = r.score * 0.5;
-          if (!existing || existing.relevance < score) {
-            candidates.set(r.memory.metadata.id, {
-              id: r.memory.metadata.id,
-              title: r.memory.metadata.title,
-              relevance: score,
-            });
-          }
-        }
-
-        for (const r of vecResults) {
-          if (r.memory.metadata.id === id) continue;
-          const existing = candidates.get(r.memory.metadata.id);
-          const score = r.score;
-          if (!existing || existing.relevance < score) {
-            candidates.set(r.memory.metadata.id, {
-              id: r.memory.metadata.id,
-              title: r.memory.metadata.title,
-              relevance: score,
-            });
-          }
-        }
-
-        suggestedConnections = [...candidates.values()]
-          .sort((a, b) => b.relevance - a.relevance)
-          .slice(0, 5);
       } catch {
         // Discovery is best-effort
       }
@@ -850,7 +748,7 @@ export function createMemorySystem(
       await project.searchIndex.insertConnection(
         input.target_id,
         input.source_id,
-        inverseType as ConnectionType,
+        inverseType,
         input.note,
       );
 

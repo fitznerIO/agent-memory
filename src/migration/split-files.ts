@@ -7,9 +7,10 @@
  * PRD 11.1 — agent-memory migrate split-files
  */
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import { serializeMarkdown } from "../memory/parser.ts";
 import type { KnowledgeType } from "../shared/types.ts";
+import { TYPE_PREFIX, slugify } from "../shared/utils.ts";
 
 /** Map bulk file paths to their knowledge type. */
 const BULK_FILE_MAP: Array<{ glob: string; type: KnowledgeType; subdir: string }> = [
@@ -18,35 +19,6 @@ const BULK_FILE_MAP: Array<{ glob: string; type: KnowledgeType; subdir: string }
   { glob: "procedural/workflows.md", type: "workflow", subdir: "procedural/workflows" },
   { glob: "procedural/patterns.md", type: "pattern", subdir: "procedural/patterns" },
 ];
-
-/** Type prefixes for sequential IDs. */
-const TYPE_PREFIX: Record<string, string> = {
-  decision: "dec",
-  incident: "inc",
-  entity: "entity",
-  pattern: "pat",
-  workflow: "wf",
-  note: "note",
-  session: "session",
-};
-
-/** Convert title to URL-friendly slug. */
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[äöüß]/g, (c) => {
-      const map: Record<string, string> = {
-        ä: "ae",
-        ö: "oe",
-        ü: "ue",
-        ß: "ss",
-      };
-      return map[c] ?? c;
-    })
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 50);
-}
 
 export interface SplitSection {
   title: string;

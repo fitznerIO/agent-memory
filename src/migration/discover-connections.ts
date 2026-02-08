@@ -6,9 +6,12 @@
  *
  * PRD 11.4 — agent-memory migrate discover-connections (optional)
  */
+import { Database } from "bun:sqlite";
+import { join } from "node:path";
 import { createEmbeddingEngine } from "../embedding/engine.ts";
+import { createSearchIndex } from "../search/index.ts";
 import type { SearchIndex } from "../search/types.ts";
-import type { MemoryConfig } from "../shared/config.ts";
+import { type MemoryConfig, createDefaultConfig } from "../shared/config.ts";
 import type { ConnectionType, SearchResult } from "../shared/types.ts";
 
 export interface DiscoveryResult {
@@ -91,4 +94,45 @@ export async function discoverForEntry(
   }
 
   return { entryId, connectionsCreated };
+}
+
+/**
+ * Run discover-connections migration across all knowledge entries.
+ * Creates a SearchIndex from the given baseDir, iterates all entries,
+ * and discovers connections for each.
+ */
+export async function migrateDiscoverConnections(
+  baseDir: string,
+  minScore = 0.8,
+): Promise<DiscoveryResult[]> {
+  const sqlitePath = join(baseDir, ".index", "search.sqlite");
+  const config: MemoryConfig = {
+    ...createDefaultConfig(),
+    baseDir,
+    sqlitePath,
+  };
+
+  const searchIndex = createSearchIndex(config);
+  const results: DiscoveryResult[] = [];
+
+  try {
+    // Query all knowledge entry IDs directly
+    const db = new Database(sqlitePath, { readonly: true });
+    const rows = db.query<{ id: string }, []>("SELECT id FROM knowledge").all();
+    db.close();
+
+    for (const row of rows) {
+      const result = await discoverForEntry(
+        row.id,
+        searchIndex,
+        config,
+        minScore,
+      );
+      results.push(result);
+    }
+  } finally {
+    searchIndex.close();
+  }
+
+  return results;
 }

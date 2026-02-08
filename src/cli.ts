@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createMemorySystem } from "./index.ts";
 import type { MemorySystem } from "./index.ts";
+import { migrateDiscoverConnections } from "./migration/discover-connections.ts";
 import { migrateNamespaceTags } from "./migration/namespace-tags.ts";
 import { migrateSplitFiles } from "./migration/split-files.ts";
 import { findProjectRoot } from "./shared/config.ts";
@@ -106,7 +107,8 @@ Examples:
   agent-memory traverse --start dec-001 --direction both
   agent-memory commit --message "Session notes" --type consolidate
   agent-memory migrate --step split-files
-  agent-memory migrate --step namespace-tags`);
+  agent-memory migrate --step namespace-tags
+  agent-memory migrate --step discover-connections`);
     process.exit(0);
   }
 
@@ -129,9 +131,14 @@ Examples:
         console.log(JSON.stringify(results, null, 2));
         break;
       }
+      case "discover-connections": {
+        const results = await migrateDiscoverConnections(baseDir);
+        console.log(JSON.stringify(results, null, 2));
+        break;
+      }
       default:
         console.error(
-          `Unknown migration step: ${step}. Available: split-files, namespace-tags`,
+          `Unknown migration step: ${step}. Available: split-files, namespace-tags, discover-connections`,
         );
         process.exit(1);
     }

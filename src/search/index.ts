@@ -7,11 +7,13 @@ import type {
   Connection,
   ConnectionType,
   HybridSearchOptions,
+  InverseConnectionType,
   KnowledgeEntry,
   KnowledgeType,
   Memory,
   SearchResult,
 } from "../shared/types.ts";
+import { TYPE_PREFIX } from "../shared/utils.ts";
 import type { ConnectionRow, IndexStats, SearchIndex } from "./types.ts";
 
 /**
@@ -337,17 +339,7 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
     "SELECT COUNT(*) as cnt FROM connections WHERE (source_id = ? OR target_id = ?) AND type NOT IN ('supersedes', 'superseded_by')",
   );
 
-  // -- v2-lite: ID prefix mapping ---------------------------------------------
-
-  const TYPE_PREFIX: Record<string, string> = {
-    decision: "dec",
-    incident: "inc",
-    entity: "entity",
-    pattern: "pat",
-    workflow: "wf",
-    note: "note",
-    session: "session",
-  };
+  // -- v2-lite: ID helpers ------------------------------------------------------
 
   function parseSequentialNumber(id: string): number {
     const match = id.match(/-(\d+)$/);
@@ -641,7 +633,7 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
     async insertConnection(
       sourceId: string,
       targetId: string,
-      type: ConnectionType,
+      type: ConnectionType | InverseConnectionType,
       note?: string,
     ): Promise<void> {
       const now = new Date().toISOString();
