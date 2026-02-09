@@ -153,7 +153,7 @@ describe("EmbeddingEngine", () => {
   });
 
   describe("dimensions", () => {
-    test("returns 384 for all-MiniLM-L6-v2", () => {
+    test("returns 384 for paraphrase-multilingual-MiniLM-L12-v2", () => {
       expect(engine.dimensions()).toBe(384);
     });
   });

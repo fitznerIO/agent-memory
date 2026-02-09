@@ -54,7 +54,7 @@ describe("MemorySystem Integration", () => {
     });
 
     test("uses default config when no overrides given", () => {
-      expect(system.config.embeddingModel).toBe("Xenova/all-MiniLM-L6-v2");
+      expect(system.config.embeddingModel).toBe("Xenova/paraphrase-multilingual-MiniLM-L12-v2");
       expect(system.config.embeddingDimensions).toBe(384);
     });
   });
