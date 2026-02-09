@@ -895,8 +895,23 @@ export function createMemorySystem(
         "session",
       ]);
 
+      // Deferred connections: collected in pass 1, inserted in pass 2
+      // after all knowledge entries exist (avoids FK constraint violations).
+      const deferredConnections: Array<{
+        sourceId: string;
+        rawConnections: Array<Record<string, unknown>>;
+      }> = [];
+
+      const FORWARD_TYPES = new Set([
+        "related",
+        "builds_on",
+        "contradicts",
+        "part_of",
+        "supersedes",
+      ]);
+
+      // --- Pass 1: Index memories, knowledge entries, and tags ---
       for (const memory of allMemories) {
-        // 3. Normalize metadata for v2-lite files (created/updated → createdAt/updatedAt)
         const rawFm = memory.metadata as unknown as Record<string, unknown>;
         const rawType = rawFm.type as string;
         const isV2Lite = KNOWLEDGE_TYPES.has(rawType);
@@ -977,44 +992,45 @@ export function createMemorySystem(
             await project.searchIndex.insertTags(id, tags);
           }
 
-          // Index connections (forward + inverse for forward-type connections)
-          const FORWARD_TYPES = new Set([
-            "related",
-            "builds_on",
-            "contradicts",
-            "part_of",
-            "supersedes",
-          ]);
+          // Defer connections for pass 2
           const connections = Array.isArray(rawFm.connections)
             ? (rawFm.connections as Array<Record<string, unknown>>)
             : [];
-          for (const conn of connections) {
-            if (conn.target && conn.type) {
-              const connType = String(conn.type) as Connection["type"];
-              const connNote = conn.note ? String(conn.note) : undefined;
-              // Always insert the connection as written
-              await project.searchIndex.insertConnection(
-                id,
-                String(conn.target),
-                connType,
-                connNote,
-              );
-              // Only insert inverse for forward ConnectionTypes
-              if (FORWARD_TYPES.has(connType)) {
-                const inverseType = getInverseType(
-                  connType as Parameters<typeof getInverseType>[0],
-                );
-                await project.searchIndex.insertConnection(
-                  String(conn.target),
-                  id,
-                  inverseType,
-                  connNote,
-                );
-              }
-            }
+          if (connections.length > 0) {
+            deferredConnections.push({
+              sourceId: id,
+              rawConnections: connections,
+            });
           }
 
           knowledgeEntries++;
+        }
+      }
+
+      // --- Pass 2: Insert connections (all knowledge entries now exist) ---
+      for (const { sourceId, rawConnections } of deferredConnections) {
+        for (const conn of rawConnections) {
+          if (conn.target && conn.type) {
+            const connType = String(conn.type) as Connection["type"];
+            const connNote = conn.note ? String(conn.note) : undefined;
+            await project.searchIndex.insertConnection(
+              sourceId,
+              String(conn.target),
+              connType,
+              connNote,
+            );
+            if (FORWARD_TYPES.has(connType)) {
+              const inverseType = getInverseType(
+                connType as Parameters<typeof getInverseType>[0],
+              );
+              await project.searchIndex.insertConnection(
+                String(conn.target),
+                sourceId,
+                inverseType,
+                connNote,
+              );
+            }
+          }
         }
       }
 
