@@ -71,4 +71,13 @@ export interface SearchIndex {
 
   // v2-lite: Connected-to filtering
   getConnectedEntryIds(id: string): Promise<string[]>;
+
+  // v2-lite: Access tracking (PRD 10.1)
+  updateAccessTracking(id: string): Promise<void>;
+
+  // Full rebuild support: clears all tables (memories, FTS, vec, knowledge, tags, connections)
+  resetAll(): void;
+
+  // Get all knowledge entries (for rebuild/decay)
+  getAllKnowledgeEntries(): Promise<KnowledgeEntry[]>;
 }

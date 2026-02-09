@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { createEmbeddingEngine } from "./embedding/engine.ts";
 import type { EmbeddingEngine } from "./embedding/types.ts";
 import { createGitManager } from "./git/manager.ts";
@@ -14,18 +14,24 @@ import type { SearchIndex } from "./search/types.ts";
 export type { MemoryConfig } from "./shared/config.ts";
 export { findProjectRoot } from "./shared/config.ts";
 import {
+  PREFIX_TO_TYPE,
   getInverseType,
   getLastModified,
   knowledgeToMemoryType,
   knowledgeTypeDir,
+  parseV2LiteId,
   slugify,
 } from "./shared/utils.ts";
 
 import { type MemoryConfig, createDefaultConfig } from "./shared/config.ts";
 export type {
+  ArchiveCandidate,
   CommitType,
   Connection,
   ConnectionType,
+  ConsolidationInput,
+  ConsolidationOutput,
+  DecayOutput,
   Importance,
   KnowledgeEntry,
   KnowledgeType,
@@ -50,12 +56,20 @@ export type {
   MemoryType,
   MemoryUpdateInput,
   MemoryUpdateOutput,
+  RebuildIndexOutput,
   SearchResult,
   StoreSource,
 } from "./shared/types.ts";
 
 import type {
+  ArchiveCandidate,
   CommitType,
+  Connection,
+  ConsolidationAction,
+  ConsolidationInput,
+  ConsolidationOutput,
+  DecayOutput,
+  KnowledgeType,
   Memory,
   MemoryCommitInput,
   MemoryCommitOutput,
@@ -75,6 +89,8 @@ import type {
   MemoryTraverseOutput,
   MemoryUpdateInput,
   MemoryUpdateOutput,
+  NoteCategory,
+  RebuildIndexOutput,
   SearchResult,
   SessionState,
 } from "./shared/types.ts";
@@ -92,6 +108,14 @@ export interface MemorySystem {
   memoryStore(input: MemoryStoreInput): Promise<MemoryStoreOutput>;
   memoryConnect(input: MemoryConnectInput): Promise<MemoryConnectOutput>;
   memoryTraverse(input: MemoryTraverseInput): Promise<MemoryTraverseOutput>;
+
+  // v2-lite: Index rebuild, Consolidation, Decay
+  rebuildIndex(): Promise<RebuildIndexOutput>;
+  consolidate(input?: ConsolidationInput): Promise<ConsolidationOutput>;
+  getArchiveCandidates(options?: {
+    maxAgeDays?: number;
+    minAccessCount?: number;
+  }): Promise<DecayOutput>;
 
   // Lifecycle
   start(): Promise<void>;
@@ -829,6 +853,151 @@ export function createMemorySystem(
       }
 
       return { results };
+    },
+
+    async rebuildIndex(): Promise<RebuildIndexOutput> {
+      const startTime = Date.now();
+
+      // 1. Clear all index data
+      project.searchIndex.resetAll();
+
+      // 2. Walk all markdown files from disk
+      const allMemories = await project.store.list();
+
+      let totalEmbeddings = 0;
+      let knowledgeEntries = 0;
+
+      const KNOWLEDGE_TYPES = new Set([
+        "decision",
+        "incident",
+        "entity",
+        "pattern",
+        "workflow",
+        "note",
+        "session",
+      ]);
+
+      for (const memory of allMemories) {
+        // 3. Normalize metadata for v2-lite files (created/updated → createdAt/updatedAt)
+        const rawFm = memory.metadata as unknown as Record<string, unknown>;
+        const rawType = rawFm.type as string;
+        const isV2Lite = KNOWLEDGE_TYPES.has(rawType);
+
+        let normalizedMemory: Memory;
+        if (isV2Lite) {
+          const createdTs = rawFm.created
+            ? new Date(String(rawFm.created)).getTime()
+            : Date.now();
+          const updatedTs = rawFm.updated
+            ? new Date(String(rawFm.updated)).getTime()
+            : createdTs;
+          normalizedMemory = {
+            metadata: {
+              id: (rawFm.id as string) ?? memory.metadata.id,
+              title:
+                (rawFm.title as string) ?? memory.metadata.title ?? "Untitled",
+              type: knowledgeToMemoryType(
+                rawType as KnowledgeType,
+              ) as Memory["metadata"]["type"],
+              tags: Array.isArray(rawFm.tags)
+                ? (rawFm.tags as string[]).map((t) => String(t).toLowerCase())
+                : [],
+              importance: "medium",
+              createdAt: createdTs,
+              updatedAt: updatedTs,
+              lastAccessedAt: updatedTs,
+              source: "memory-store",
+            },
+            content: memory.content,
+            filePath: memory.filePath,
+          };
+        } else {
+          normalizedMemory = memory;
+        }
+
+        // Embed and index in memories/FTS/vec
+        try {
+          const embResult = await embedding.embed(normalizedMemory.content);
+          const memWithEmbed = Object.assign({}, normalizedMemory, {
+            embedding: embResult.vector,
+          });
+          await project.searchIndex.index(memWithEmbed);
+          totalEmbeddings++;
+        } catch {
+          // Best-effort: skip files that fail to embed
+          await project.searchIndex.index(normalizedMemory);
+        }
+
+        if (isV2Lite) {
+          const knType = rawType as KnowledgeType;
+          const id = normalizedMemory.metadata.id;
+          const title = normalizedMemory.metadata.title;
+          const created = new Date(
+            normalizedMemory.metadata.createdAt,
+          ).toISOString();
+          const updated = new Date(
+            normalizedMemory.metadata.updatedAt,
+          ).toISOString();
+
+          // Index in knowledge table
+          await project.searchIndex.indexKnowledge({
+            id,
+            title,
+            type: knType,
+            filePath: memory.filePath,
+            createdAt: created,
+            updatedAt: updated,
+            accessCount: 0,
+            tags: [],
+          });
+
+          // Index tags
+          const tags = Array.isArray(rawFm.tags)
+            ? (rawFm.tags as string[]).map((t) => String(t).toLowerCase())
+            : [];
+          if (tags.length > 0) {
+            await project.searchIndex.insertTags(id, tags);
+          }
+
+          // Index connections
+          const connections = Array.isArray(rawFm.connections)
+            ? (rawFm.connections as Array<Record<string, unknown>>)
+            : [];
+          for (const conn of connections) {
+            if (conn.target && conn.type) {
+              await project.searchIndex.insertConnection(
+                id,
+                String(conn.target),
+                String(conn.type) as Connection["type"],
+                conn.note ? String(conn.note) : undefined,
+              );
+            }
+          }
+
+          knowledgeEntries++;
+        }
+      }
+
+      return {
+        totalDocuments: allMemories.length,
+        totalEmbeddings,
+        knowledgeEntries,
+        elapsed: Date.now() - startTime,
+      };
+    },
+
+    async consolidate(
+      _input?: ConsolidationInput,
+    ): Promise<ConsolidationOutput> {
+      // Placeholder — implemented in Feature 2
+      throw new Error("Not implemented");
+    },
+
+    async getArchiveCandidates(
+      _options?: { maxAgeDays?: number; minAccessCount?: number },
+    ): Promise<DecayOutput> {
+      // Placeholder — implemented in Feature 3
+      throw new Error("Not implemented");
     },
 
     async start(): Promise<void> {

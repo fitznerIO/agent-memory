@@ -150,6 +150,66 @@ export interface MemoryCommitOutput {
   filesChanged: number;
 }
 
+// Rebuild index output
+export interface RebuildIndexOutput {
+  totalDocuments: number;
+  totalEmbeddings: number;
+  knowledgeEntries: number;
+  elapsed: number;
+}
+
+// Consolidation types
+export interface ConsolidationInput {
+  dryRun?: boolean;
+}
+
+export type NoteCategory =
+  | "decision"
+  | "incident"
+  | "workflow"
+  | "fact"
+  | "note";
+
+export interface ConsolidationAction {
+  type: "create_file" | "normalize_tags" | "skip_duplicate" | "subsume";
+  noteId: string;
+  category: NoteCategory;
+  targetType?: KnowledgeType;
+  title?: string;
+  content?: string;
+  tags?: string[];
+  duplicateOfId?: string;
+  supersedesId?: string;
+}
+
+export interface ConsolidationOutput {
+  actions: ConsolidationAction[];
+  filesCreated: number;
+  tagsNormalized: number;
+  duplicatesSkipped: number;
+  subsumed: number;
+}
+
+// Decay / Lifecycle types
+export interface ArchiveCandidate {
+  id: string;
+  title: string;
+  type: string;
+  lastAccessed: string | null;
+  accessCount: number;
+  daysSinceAccess: number;
+  importance: "high" | "medium" | "low";
+  activeConnections: number;
+  status: "archive_candidate" | "connected_but_stale";
+  reason: string;
+}
+
+export interface DecayOutput {
+  candidates: ArchiveCandidate[];
+  totalEvaluated: number;
+  totalCandidates: number;
+}
+
 // ---------------------------------------------------------------------------
 // v2-lite Types
 // ---------------------------------------------------------------------------

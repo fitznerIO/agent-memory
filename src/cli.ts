@@ -81,16 +81,19 @@ async function main(): Promise<void> {
     console.log(`agent-memory — Persistent memory for AI agents
 
 Commands:
-  note       Save a note to memory
-  search     Hybrid search across all memories
-  read       Read a specific memory file
-  update     Update memory content
-  forget     Delete matching memories
-  commit     Git commit pending changes
-  store      Create individual knowledge file (v2-lite)
-  connect    Create bidirectional connection (v2-lite)
-  traverse   Navigate knowledge network (v2-lite)
-  migrate    Run migrations (split-files)
+  note           Save a note to memory
+  search         Hybrid search across all memories
+  read           Read a specific memory file
+  update         Update memory content
+  forget         Delete matching memories
+  commit         Git commit pending changes
+  store          Create individual knowledge file (v2-lite)
+  connect        Create bidirectional connection (v2-lite)
+  traverse       Navigate knowledge network (v2-lite)
+  rebuild-index  Rebuild search index from markdown files (re-embeds all)
+  consolidate    Run consolidation on session notes
+  decay          Show archive candidates based on access patterns
+  migrate        Run migrations (split-files)
 
 Global flags:
   --project-dir <path>  Project root (auto-detected from .git/package.json)
@@ -272,6 +275,37 @@ Examples:
             | "incoming"
             | "both",
           depth: flags.depth ? Number.parseInt(flags.depth, 10) : undefined,
+        });
+        console.log(JSON.stringify(result, null, 2));
+        break;
+      }
+
+      case "rebuild-index": {
+        console.error("Rebuilding index from markdown files...");
+        const result = await system.rebuildIndex();
+        console.error(
+          `Rebuild complete: ${result.totalDocuments} docs, ${result.totalEmbeddings} embeddings, ${result.knowledgeEntries} knowledge entries (${(result.elapsed / 1000).toFixed(1)}s)`,
+        );
+        console.log(JSON.stringify(result, null, 2));
+        break;
+      }
+
+      case "consolidate": {
+        const result = await system.consolidate({
+          dryRun: flags["dry-run"] === "true",
+        });
+        console.log(JSON.stringify(result, null, 2));
+        break;
+      }
+
+      case "decay": {
+        const result = await system.getArchiveCandidates({
+          maxAgeDays: flags["max-age"]
+            ? Number.parseInt(flags["max-age"], 10)
+            : undefined,
+          minAccessCount: flags["min-access"]
+            ? Number.parseInt(flags["min-access"], 10)
+            : undefined,
         });
         console.log(JSON.stringify(result, null, 2));
         break;

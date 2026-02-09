@@ -516,6 +516,92 @@ describe("SearchIndex", () => {
     });
   });
 
+  // -- resetAll ---------------------------------------------------------------
+
+  describe("resetAll", () => {
+    test("clears all data from all tables", async () => {
+      // Index memories
+      const vec = makeVector(1);
+      await idx.index(
+        makeMemory("mem-1", "Document about TypeScript", { embedding: vec }),
+      );
+      await idx.index(
+        makeMemory("mem-2", "Document about Python", {
+          embedding: makeVector(2),
+        }),
+      );
+
+      // Index knowledge entries
+      await idx.indexKnowledge({
+        id: "dec-001",
+        title: "Use TypeScript",
+        type: "decision",
+        filePath: "semantic/decisions/dec-001-use-typescript.md",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        accessCount: 0,
+        tags: ["tech/typescript"],
+      });
+      await idx.indexKnowledge({
+        id: "dec-002",
+        title: "Use Bun",
+        type: "decision",
+        filePath: "semantic/decisions/dec-002-use-bun.md",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        accessCount: 0,
+        tags: [],
+      });
+      await idx.insertTags("dec-001", ["tech/typescript"]);
+      await idx.insertConnection("dec-001", "dec-002", "related", "test");
+
+      // Verify data exists
+      expect((await idx.searchText("TypeScript")).length).toBe(1);
+      expect(await idx.getKnowledgeById("dec-001")).not.toBeNull();
+      expect((await idx.getExistingTags()).length).toBe(1);
+      expect(await idx.getConnectionCount("dec-001")).toBe(1);
+
+      // Reset all
+      idx.resetAll();
+
+      // Verify everything is cleared
+      const fts = await idx.searchText("TypeScript");
+      expect(fts.length).toBe(0);
+
+      const vec2 = await idx.searchVector(vec);
+      expect(vec2.length).toBe(0);
+
+      const entry = await idx.getKnowledgeById("dec-001");
+      expect(entry).toBeNull();
+
+      const tags = await idx.getExistingTags();
+      expect(tags.length).toBe(0);
+
+      const connCount = await idx.getConnectionCount("dec-001");
+      expect(connCount).toBe(0);
+    });
+
+    test("allows re-indexing after reset", async () => {
+      // Index, reset, then re-index
+      await idx.index(
+        makeMemory("mem-1", "Original content", { embedding: makeVector(1) }),
+      );
+
+      idx.resetAll();
+
+      // Re-index with new content
+      await idx.index(
+        makeMemory("mem-1", "New content after reset", {
+          embedding: makeVector(2),
+        }),
+      );
+
+      const results = await idx.searchText("New content");
+      expect(results.length).toBe(1);
+      expect(results[0]!.memory.content).toBe("New content after reset");
+    });
+  });
+
   // -- close ------------------------------------------------------------------
 
   describe("close", () => {

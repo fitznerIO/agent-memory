@@ -709,5 +709,71 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       }
       return [...ids];
     },
+
+    async updateAccessTracking(id: string): Promise<void> {
+      const now = new Date().toISOString();
+      db.run(
+        "UPDATE knowledge SET last_accessed = ?, access_count = access_count + 1 WHERE id = ?",
+        [now, id],
+      );
+    },
+
+    resetAll(): void {
+      // Clear regular tables
+      db.run("DELETE FROM connections");
+      db.run("DELETE FROM entry_tags");
+      db.run("DELETE FROM knowledge");
+
+      // Clear vec table
+      db.run("DELETE FROM memories_vec");
+
+      // Clear memories (FTS triggers fire on each delete)
+      db.run("DELETE FROM memories");
+
+      // Rebuild FTS to ensure clean state
+      db.run("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
+    },
+
+    async getAllKnowledgeEntries(): Promise<KnowledgeEntry[]> {
+      const rows = db
+        .query<
+          {
+            id: string;
+            title: string;
+            type: string;
+            file_path: string;
+            created_at: string;
+            updated_at: string;
+            last_accessed: string | null;
+            access_count: number;
+          },
+          []
+        >("SELECT * FROM knowledge")
+        .all();
+
+      const entries: KnowledgeEntry[] = [];
+      for (const row of rows) {
+        const tags = selectTagsByEntry.all(row.id).map((r) => r.tag);
+        const connRows = selectConnOutgoing.all(row.id);
+        const connections: Connection[] = connRows.map((c) => ({
+          target: c.target_id,
+          type: c.type as Connection["type"],
+          note: c.note ?? undefined,
+        }));
+        entries.push({
+          id: row.id,
+          title: row.title,
+          type: row.type as KnowledgeType,
+          filePath: row.file_path,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          lastAccessed: row.last_accessed ?? undefined,
+          accessCount: row.access_count,
+          tags,
+          connections,
+        });
+      }
+      return entries;
+    },
   };
 }
