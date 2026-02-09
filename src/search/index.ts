@@ -54,6 +54,9 @@ interface VecResultRow {
   distance: number;
 }
 
+// Common German verb/adjective prefixes that change meaning but share the root
+const GERMAN_PREFIXES = ["un", "ver", "be", "ent", "er", "zer", "miss", "ge"];
+
 /**
  * Stem a single word with both German and English Snowball stemmers.
  * Returns the stem only when it differs from the lowercase original,
@@ -73,28 +76,79 @@ function stemWord(word: string): string | null {
 }
 
 /**
- * Preprocess text for FTS5 indexing:
- * 1. Expand hyphenated terms: "KI-Services" → "KI-Services KI Services"
- * 2. Append unique Snowball stems (German + English) so that morphological
- *    variants match in the FTS index. Works together with unicode61 tokenizer
- *    (no Porter) — all stemming is handled here and in sanitizeFtsQuery().
+ * Collect all relevant stems for a word, including:
+ * 1. Primary Snowball stem (German → English fallback)
+ * 2. Prefix-stripped stems (un-, ver-, be-, etc.) to match across prefixed variants
+ * 3. Fuzzy stems: drop last char from stems >= 8 chars to unify verb form
+ *    variations (e.g. "verschlusseln" / "verschlusselt" → "verschlussel")
  */
-function preprocessForFts(text: string): string {
+function collectStems(word: string): string[] {
+  const lower = word.toLowerCase();
+  if (lower.length < 3) return [];
+
+  const stems = new Set<string>();
+
+  // Primary stem
+  const primary = stemWord(word);
+  if (primary) {
+    stems.add(primary);
+    // Fuzzy stem: truncate last char for long stems to unify verb forms
+    if (primary.length >= 8) {
+      stems.add(primary.slice(0, -1));
+    }
+  }
+
+  // Prefix-stripped stems: strip common German prefixes and re-stem
+  for (const prefix of GERMAN_PREFIXES) {
+    if (lower.startsWith(prefix) && lower.length > prefix.length + 3) {
+      const stripped = lower.slice(prefix.length);
+      const strippedStem = germanStemmer.stem(stripped);
+      if (
+        strippedStem &&
+        strippedStem !== stripped &&
+        strippedStem.length >= 3
+      ) {
+        stems.add(strippedStem);
+        if (strippedStem.length >= 8) {
+          stems.add(strippedStem.slice(0, -1));
+        }
+      }
+    }
+  }
+
+  // Remove the original word if it ended up in the set
+  stems.delete(lower);
+
+  return [...stems];
+}
+
+/**
+ * Preprocess text for FTS5 indexing:
+ * 1. Optionally prepend the document title for title-match boosting
+ * 2. Expand hyphenated terms: "KI-Services" → "KI-Services KI Services"
+ * 3. Append unique stems (primary + prefix-stripped + fuzzy) so that
+ *    morphological variants match in the FTS index.
+ */
+function preprocessForFts(text: string, title?: string): string {
+  // Prepend title so title terms get indexed and boost BM25 relevance
+  let result = title ? `${title} ${text}` : text;
+
   // Expand hyphens
-  let result = text.replace(/\b(\w+)-(\w+)\b/g, (match, a, b) => {
+  result = result.replace(/\b(\w+)-(\w+)\b/g, (match, a, b) => {
     return `${match} ${a} ${b}`;
   });
 
-  // Collect unique stems for all words ≥ 3 chars
+  // Collect all stems (primary + prefix-stripped + fuzzy) for words ≥ 3 chars
   const words = result.match(/\b\w{3,}\b/g);
   if (words) {
-    const stems = new Set<string>();
+    const allStems = new Set<string>();
     for (const w of words) {
-      const s = stemWord(w);
-      if (s) stems.add(s);
+      for (const s of collectStems(w)) {
+        allStems.add(s);
+      }
     }
-    if (stems.size > 0) {
-      result += " " + [...stems].join(" ");
+    if (allStems.size > 0) {
+      result += ` ${[...allStems].join(" ")}`;
     }
   }
 
@@ -108,12 +162,12 @@ function preprocessForFts(text: string): string {
  */
 const TYPE_WEIGHT: Record<string, number> = {
   decision: 1.15,
-  pattern: 1.10,
+  pattern: 1.1,
   incident: 1.05,
   workflow: 1.0,
   entity: 1.0,
   note: 0.95,
-  session: 0.90,
+  session: 0.9,
 };
 
 /**
@@ -139,7 +193,7 @@ function sanitizeFtsQuery(query: string): string {
   // Reject empty or too-short queries
   if (sanitized.length < 2) return "";
 
-  // Expand each word with its German/English stem using OR groups:
+  // Expand each word with all stems (primary + prefix-stripped + fuzzy) using OR groups:
   // "Stundensätze regulatorisch" → "(Stundensätze OR stundensatz) AND (regulatorisch OR regulator)"
   // FTS5 requires explicit AND when mixing OR groups (implicit AND + OR crashes).
   const words = sanitized.split(/\s+/).filter((w) => w.length >= 2);
@@ -147,9 +201,9 @@ function sanitizeFtsQuery(query: string): string {
     const groups: string[] = [];
     let hasOrGroup = false;
     for (const w of words) {
-      const s = stemWord(w);
-      if (s) {
-        groups.push(`(${w} OR ${s})`);
+      const stems = collectStems(w);
+      if (stems.length > 0) {
+        groups.push(`(${w} OR ${stems.join(" OR ")})`);
         hasOrGroup = true;
       } else {
         groups.push(w);
@@ -305,9 +359,7 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
   const insertFts = db.query(
     "INSERT OR REPLACE INTO memories_fts(rowid, content) VALUES (?, ?)",
   );
-  const deleteFtsByRowid = db.query(
-    "DELETE FROM memories_fts WHERE rowid = ?",
-  );
+  const deleteFtsByRowid = db.query("DELETE FROM memories_fts WHERE rowid = ?");
 
   const searchFts = db.query<FtsResultRow, [string, number]>(`
     SELECT m.*, bm25(memories_fts) AS bm25_score
@@ -372,8 +424,11 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
         );
       }
 
-      // Index PREPROCESSED content into FTS (stems + hyphens expanded)
-      insertFts.run(row.rowid, preprocessForFts(memory.content));
+      // Index PREPROCESSED content into FTS (title + stems + hyphens expanded)
+      insertFts.run(
+        row.rowid,
+        preprocessForFts(memory.content, memory.metadata.title),
+      );
 
       // Insert embedding if provided
       if (embedding) {
@@ -647,21 +702,22 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       // Min-Max normalization: remap RRF scores to 0–1 range
       // so that minScore filtering becomes meaningful
       if (scored.length >= 2) {
-        const rawMax = scored[0]!.score;
-        const rawMin = scored[scored.length - 1]!.score;
-        const range = rawMax - rawMin;
-        if (range > 0) {
-          for (const s of scored) {
-            s.score = (s.score - rawMin) / range;
-          }
-        } else {
-          // All scores identical — set to 1.0
-          for (const s of scored) {
-            s.score = 1.0;
+        const first = scored[0];
+        const last = scored[scored.length - 1];
+        if (first && last) {
+          const range = first.score - last.score;
+          if (range > 0) {
+            for (const s of scored) {
+              s.score = (s.score - last.score) / range;
+            }
+          } else {
+            for (const s of scored) {
+              s.score = 1.0;
+            }
           }
         }
-      } else if (scored.length === 1) {
-        scored[0]!.score = 1.0;
+      } else if (scored.length === 1 && scored[0]) {
+        scored[0].score = 1.0;
       }
 
       // Filter by minScore and limit
@@ -695,11 +751,11 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       db.run("DROP TRIGGER IF EXISTS memories_ad");
       db.run("DROP TRIGGER IF EXISTS memories_au");
 
-      // Re-populate FTS from all memories with preprocessed content
+      // Re-populate FTS from all memories with preprocessed content + title
       for (const row of allMemories) {
         db.run("INSERT INTO memories_fts(rowid, content) VALUES (?, ?)", [
           row.rowid,
-          preprocessForFts(row.content),
+          preprocessForFts(row.content, row.title ?? undefined),
         ]);
       }
 
