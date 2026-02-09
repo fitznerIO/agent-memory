@@ -299,13 +299,22 @@ Examples:
       }
 
       case "decay": {
+        const maxAge = flags["max-age"]
+          ? Number.parseInt(flags["max-age"], 10)
+          : undefined;
+        const minAccess = flags["min-access"]
+          ? Number.parseInt(flags["min-access"], 10)
+          : undefined;
+        if (
+          (maxAge !== undefined && Number.isNaN(maxAge)) ||
+          (minAccess !== undefined && Number.isNaN(minAccess))
+        ) {
+          console.error("--max-age and --min-access must be valid integers.");
+          process.exit(1);
+        }
         const result = await system.getArchiveCandidates({
-          maxAgeDays: flags["max-age"]
-            ? Number.parseInt(flags["max-age"], 10)
-            : undefined,
-          minAccessCount: flags["min-access"]
-            ? Number.parseInt(flags["min-access"], 10)
-            : undefined,
+          maxAgeDays: maxAge,
+          minAccessCount: minAccess,
         });
         console.log(JSON.stringify(result, null, 2));
         break;

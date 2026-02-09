@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createConsolidationAgent } from "./consolidation/agent.ts";
 import type { ExistingEntry } from "./consolidation/types.ts";
 import { createEmbeddingEngine } from "./embedding/engine.ts";
@@ -16,12 +16,10 @@ import type { SearchIndex } from "./search/types.ts";
 export type { MemoryConfig } from "./shared/config.ts";
 export { findProjectRoot } from "./shared/config.ts";
 import {
-  PREFIX_TO_TYPE,
   getInverseType,
   getLastModified,
   knowledgeToMemoryType,
   knowledgeTypeDir,
-  parseV2LiteId,
   slugify,
 } from "./shared/utils.ts";
 
@@ -67,7 +65,6 @@ import type {
   ArchiveCandidate,
   CommitType,
   Connection,
-  ConsolidationAction,
   ConsolidationInput,
   ConsolidationOutput,
   DecayOutput,
@@ -91,7 +88,6 @@ import type {
   MemoryTraverseOutput,
   MemoryUpdateInput,
   MemoryUpdateOutput,
-  NoteCategory,
   RebuildIndexOutput,
   SearchResult,
   SessionState,
@@ -412,6 +408,7 @@ export function createMemorySystem(
           type: input.type,
           importance: input.importance,
           timestamp,
+          tags,
         });
       }
 
@@ -980,18 +977,40 @@ export function createMemorySystem(
             await project.searchIndex.insertTags(id, tags);
           }
 
-          // Index connections
+          // Index connections (forward + inverse for forward-type connections)
+          const FORWARD_TYPES = new Set([
+            "related",
+            "builds_on",
+            "contradicts",
+            "part_of",
+            "supersedes",
+          ]);
           const connections = Array.isArray(rawFm.connections)
             ? (rawFm.connections as Array<Record<string, unknown>>)
             : [];
           for (const conn of connections) {
             if (conn.target && conn.type) {
+              const connType = String(conn.type) as Connection["type"];
+              const connNote = conn.note ? String(conn.note) : undefined;
+              // Always insert the connection as written
               await project.searchIndex.insertConnection(
                 id,
                 String(conn.target),
-                String(conn.type) as Connection["type"],
-                conn.note ? String(conn.note) : undefined,
+                connType,
+                connNote,
               );
+              // Only insert inverse for forward ConnectionTypes
+              if (FORWARD_TYPES.has(connType)) {
+                const inverseType = getInverseType(
+                  connType as Parameters<typeof getInverseType>[0],
+                );
+                await project.searchIndex.insertConnection(
+                  String(conn.target),
+                  id,
+                  inverseType,
+                  connNote,
+                );
+              }
             }
           }
 
@@ -1019,7 +1038,7 @@ export function createMemorySystem(
         content: n.content,
         type: n.type,
         importance: n.importance,
-        tags: [] as string[],
+        tags: n.tags,
       }));
 
       if (notes.length === 0) {
@@ -1050,15 +1069,16 @@ export function createMemorySystem(
         }
       }
 
-      const existingTags = await project.searchIndex.getExistingTags();
-      const actions = consolidator.buildPlan(notes, existingEntries, existingTags);
+      const actions = consolidator.buildPlan(notes, existingEntries);
 
       if (dryRun) {
         return {
           actions,
           filesCreated: actions.filter((a) => a.type === "create_file").length,
-          tagsNormalized: actions.filter((a) => a.type === "normalize_tags").length,
-          duplicatesSkipped: actions.filter((a) => a.type === "skip_duplicate").length,
+          tagsNormalized: actions.filter((a) => a.type === "normalize_tags")
+            .length,
+          duplicatesSkipped: actions.filter((a) => a.type === "skip_duplicate")
+            .length,
           subsumed: actions.filter((a) => a.type === "subsume").length,
         };
       }
@@ -1085,7 +1105,7 @@ export function createMemorySystem(
           }
           case "subsume": {
             if (action.targetType && action.content && action.supersedesId) {
-              const result = await this.memoryStore({
+              await this.memoryStore({
                 title: action.title ?? "Untitled",
                 type: action.targetType,
                 content: action.content,
@@ -1123,9 +1143,10 @@ export function createMemorySystem(
       };
     },
 
-    async getArchiveCandidates(
-      options?: { maxAgeDays?: number; minAccessCount?: number },
-    ): Promise<DecayOutput> {
+    async getArchiveCandidates(options?: {
+      maxAgeDays?: number;
+      minAccessCount?: number;
+    }): Promise<DecayOutput> {
       const maxAgeDays = options?.maxAgeDays ?? 90;
       const minAccessCount = options?.minAccessCount ?? 2;
       const now = Date.now();
@@ -1141,7 +1162,10 @@ export function createMemorySystem(
         const daysSinceAccess = (now - lastAccessTime) / (1000 * 60 * 60 * 24);
 
         // Skip recently accessed entries
-        if (daysSinceAccess < maxAgeDays && entry.accessCount >= minAccessCount) {
+        if (
+          daysSinceAccess < maxAgeDays &&
+          entry.accessCount >= minAccessCount
+        ) {
           continue;
         }
 

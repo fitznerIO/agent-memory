@@ -33,6 +33,7 @@ export interface MemoryNote {
   type: MemoryType;
   importance: Importance;
   timestamp: number;
+  tags: string[];
 }
 
 export type StoreSource = "project" | "global";

@@ -1,4 +1,8 @@
-import type { ConsolidationAction, KnowledgeType, NoteCategory } from "../shared/types.ts";
+import type {
+  ConsolidationAction,
+  KnowledgeType,
+  NoteCategory,
+} from "../shared/types.ts";
 import type {
   ConsolidationAgent,
   ExistingEntry,
@@ -88,6 +92,7 @@ export function createConsolidationAgent(): ConsolidationAgent {
       // If the note was already typed as a specific type, respect that
       if (type === "decision") return "decision";
       if (type === "incident") return "incident";
+      if (type === "workflow") return "workflow";
 
       const decisionScore = countMatches(content, DECISION_PATTERNS);
       const incidentScore = countMatches(content, INCIDENT_PATTERNS);
@@ -144,27 +149,15 @@ export function createConsolidationAgent(): ConsolidationAgent {
       return title || "Untitled";
     },
 
-    normalizeTags(tags: string[], existingTags?: string[]): string[] {
-      const existingSet = new Set(existingTags?.map((t) => t.toLowerCase()));
+    normalizeTags(tags: string[]): string[] {
       const normalized = new Set<string>();
 
       for (const tag of tags) {
-        let t = tag
+        const t = tag
           .toLowerCase()
           .trim()
           .replace(/\/+$/, "") // Remove trailing slashes
           .replace(/\s+/g, "-"); // Spaces to hyphens
-
-        // Try to match against existing tags for consistency
-        if (existingSet.size > 0 && !existingSet.has(t)) {
-          // Check if there's a case-insensitive match
-          for (const existing of existingSet) {
-            if (existing === t) {
-              t = existing;
-              break;
-            }
-          }
-        }
 
         if (t.length > 0) {
           normalized.add(t);
@@ -208,13 +201,12 @@ export function createConsolidationAgent(): ConsolidationAgent {
     buildPlan(
       notes: SessionNoteInput[],
       existingEntries: ExistingEntry[],
-      existingTags: string[],
     ): ConsolidationAction[] {
       const actions: ConsolidationAction[] = [];
 
       for (const note of notes) {
         const category = this.categorize(note.content, note.type);
-        const tags = this.normalizeTags(note.tags ?? [], existingTags);
+        const tags = this.normalizeTags(note.tags ?? []);
 
         // Check for duplicates
         const duplicate = this.findDuplicate(note.content, existingEntries);

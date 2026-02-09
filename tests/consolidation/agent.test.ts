@@ -234,7 +234,7 @@ describe("ConsolidationAgent", () => {
         },
       ];
 
-      const plan = agent.buildPlan(notes, [], []);
+      const plan = agent.buildPlan(notes, []);
 
       expect(plan.length).toBe(1);
       expect(plan[0]!.type).toBe("create_file");
@@ -262,7 +262,7 @@ describe("ConsolidationAgent", () => {
         },
       ];
 
-      const plan = agent.buildPlan(notes, existing, []);
+      const plan = agent.buildPlan(notes, existing);
 
       expect(plan.length).toBe(1);
       expect(plan[0]!.type).toBe("skip_duplicate");
@@ -289,7 +289,7 @@ describe("ConsolidationAgent", () => {
         },
       ];
 
-      const plan = agent.buildPlan(notes, existing, []);
+      const plan = agent.buildPlan(notes, existing);
 
       expect(plan.length).toBe(1);
       expect(plan[0]!.type).toBe("subsume");
@@ -308,13 +308,13 @@ describe("ConsolidationAgent", () => {
         },
       ];
 
-      const plan = agent.buildPlan(notes, [], ["tech/ssl", "infra"]);
+      const plan = agent.buildPlan(notes, []);
 
       expect(plan[0]!.tags).toEqual(["infra", "tech/ssl"]);
     });
 
     test("handles empty notes array", () => {
-      const plan = agent.buildPlan([], [], []);
+      const plan = agent.buildPlan([], []);
       expect(plan).toEqual([]);
     });
   });

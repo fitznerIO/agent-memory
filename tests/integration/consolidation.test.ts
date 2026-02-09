@@ -69,8 +69,8 @@ describe("Consolidation Integration", () => {
 
       expect(result.actions.length).toBeGreaterThan(0);
       // In dry-run mode, actions are planned but not executed
-      // The count fields still reflect what WOULD happen
-      expect(result.filesCreated).toBeGreaterThanOrEqual(0);
+      // The count fields reflect what WOULD happen
+      expect(result.filesCreated).toBeGreaterThanOrEqual(1);
     },
     TEST_TIMEOUT,
   );

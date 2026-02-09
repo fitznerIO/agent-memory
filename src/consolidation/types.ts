@@ -31,7 +31,7 @@ export interface ConsolidationAgent {
   generateTitle(content: string): string;
 
   /** Normalize tags: lowercase, deduplicate, trim whitespace. */
-  normalizeTags(tags: string[], existingTags?: string[]): string[];
+  normalizeTags(tags: string[]): string[];
 
   /** Check if content is a near-duplicate of any existing entry. */
   findDuplicate(
@@ -49,6 +49,5 @@ export interface ConsolidationAgent {
   buildPlan(
     notes: SessionNoteInput[],
     existingEntries: ExistingEntry[],
-    existingTags: string[],
   ): ConsolidationAction[];
 }
