@@ -450,6 +450,43 @@ describe("SearchIndex", () => {
       expect(results.length).toBeGreaterThan(0);
       expect(results[0]!.matchType).toBe("hybrid");
     });
+
+    test("dynamic k produces meaningful score spread for small corpora", async () => {
+      const vec1 = makeVector(1);
+      const vec2 = makeVector(2);
+      const vec3 = makeVector(3);
+
+      await idx.index(
+        makeMemory("mem-1", "TypeScript compiler and type checking", {
+          embedding: vec1,
+        }),
+      );
+      await idx.index(
+        makeMemory("mem-2", "Python machine learning libraries", {
+          embedding: vec2,
+        }),
+      );
+      await idx.index(
+        makeMemory("mem-3", "Go concurrency patterns and goroutines", {
+          embedding: vec3,
+        }),
+      );
+
+      // With dynamic k, small pool (limit*3=15) yields k=3, not 60.
+      // Score for rank 1: 1/(3+1)=0.25 vs k=60: 1/(60+1)=0.016
+      const results = await idx.searchHybrid("TypeScript", vec1, {
+        limit: 5,
+        minScore: 0,
+        weightFts: 0.3,
+        weightVector: 0.5,
+        weightRecency: 0.2,
+        rrfK: 60,
+      });
+
+      expect(results.length).toBeGreaterThan(0);
+      // Top result score should be > 0.2 (would be ~0.01 with static k=60)
+      expect(results[0]!.score).toBeGreaterThan(0.2);
+    });
   });
 
   // -- rebuild ----------------------------------------------------------------

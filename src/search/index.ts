@@ -434,7 +434,9 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       const maxVecRank = vecResults.length + 1;
 
       const now = Date.now();
-      const k = opts.rrfK;
+      // Dynamic k: prevent score compression for small corpora.
+      // poolSize/4 ≈ expected relevant results; capped at configured rrfK.
+      const k = Math.max(1, Math.min(opts.rrfK, Math.floor(poolSize / 4)));
 
       const scored: Array<{ id: string; score: number; memory: Memory }> = [];
 
