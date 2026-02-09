@@ -52,6 +52,7 @@
   "dependencies": {
     "@huggingface/transformers": "^3.4.0",
     "isomorphic-git": "^1.27.1",
+    "snowball-stemmers": "^0.6.0",
     "sqlite-vec": "^0.1.6",
     "yaml": "^2.7.0"
   },

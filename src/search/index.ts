@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { newStemmer } from "snowball-stemmers";
 import * as sqliteVec from "sqlite-vec";
 import type { MemoryConfig } from "../shared/config.ts";
 import type {
@@ -15,6 +16,10 @@ import type {
 } from "../shared/types.ts";
 import { TYPE_PREFIX } from "../shared/utils.ts";
 import type { ConnectionRow, IndexStats, SearchIndex } from "./types.ts";
+
+// Snowball stemmers for German and English
+const germanStemmer = newStemmer("german");
+const englishStemmer = newStemmer("english");
 
 /**
  * Row shape returned from the memories table.
@@ -50,14 +55,50 @@ interface VecResultRow {
 }
 
 /**
- * Preprocess text for FTS5 indexing: expand hyphenated terms.
- * "KI-Services" → "KI-Services KI Services"
- * "DSGVO-konform" → "DSGVO-konform DSGVO konform"
+ * Stem a single word with both German and English Snowball stemmers.
+ * Returns the stem only when it differs from the lowercase original,
+ * to avoid duplicating identical tokens in the FTS index.
  */
-function expandHyphens(text: string): string {
-  return text.replace(/\b(\w+)-(\w+)\b/g, (match, a, b) => {
+function stemWord(word: string): string | null {
+  const lower = word.toLowerCase();
+  if (lower.length < 3) return null; // skip short words
+
+  const deStem = germanStemmer.stem(lower);
+  if (deStem && deStem !== lower && deStem.length >= 2) return deStem;
+
+  const enStem = englishStemmer.stem(lower);
+  if (enStem && enStem !== lower && enStem.length >= 2) return enStem;
+
+  return null;
+}
+
+/**
+ * Preprocess text for FTS5 indexing:
+ * 1. Expand hyphenated terms: "KI-Services" → "KI-Services KI Services"
+ * 2. Append unique Snowball stems (German + English) so that morphological
+ *    variants match in the FTS index. Works together with unicode61 tokenizer
+ *    (no Porter) — all stemming is handled here and in sanitizeFtsQuery().
+ */
+function preprocessForFts(text: string): string {
+  // Expand hyphens
+  let result = text.replace(/\b(\w+)-(\w+)\b/g, (match, a, b) => {
     return `${match} ${a} ${b}`;
   });
+
+  // Collect unique stems for all words ≥ 3 chars
+  const words = result.match(/\b\w{3,}\b/g);
+  if (words) {
+    const stems = new Set<string>();
+    for (const w of words) {
+      const s = stemWord(w);
+      if (s) stems.add(s);
+    }
+    if (stems.size > 0) {
+      result += " " + [...stems].join(" ");
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -77,14 +118,14 @@ const TYPE_WEIGHT: Record<string, number> = {
 
 /**
  * Sanitize a query string for FTS5 MATCH syntax.
- * Removes characters that would cause FTS5 parse errors (/, ., etc.)
- * and splits hyphenated terms into separate tokens.
+ * Removes characters that would cause FTS5 parse errors (/, ., etc.),
+ * splits hyphenated terms into separate tokens, and appends stems
+ * so that morphological variants match indexed stems.
  */
 function sanitizeFtsQuery(query: string): string {
-  // Expand hyphenated terms: "KI-Services" → KI OR Services OR "KI-Services"
   let sanitized = query;
 
-  // Split hyphenated words into separate tokens + keep original
+  // Split hyphenated words into separate tokens
   sanitized = sanitized.replace(/\b(\w+)-(\w+)\b/g, (_match, a, b) => {
     return `${a} ${b}`;
   });
@@ -97,6 +138,26 @@ function sanitizeFtsQuery(query: string): string {
 
   // Reject empty or too-short queries
   if (sanitized.length < 2) return "";
+
+  // Expand each word with its German/English stem using OR groups:
+  // "Stundensätze regulatorisch" → "(Stundensätze OR stundensatz) AND (regulatorisch OR regulator)"
+  // FTS5 requires explicit AND when mixing OR groups (implicit AND + OR crashes).
+  const words = sanitized.split(/\s+/).filter((w) => w.length >= 2);
+  if (words.length > 0) {
+    const groups: string[] = [];
+    let hasOrGroup = false;
+    for (const w of words) {
+      const s = stemWord(w);
+      if (s) {
+        groups.push(`(${w} OR ${s})`);
+        hasOrGroup = true;
+      } else {
+        groups.push(w);
+      }
+    }
+    // Use explicit AND when any OR group is present (FTS5 syntax requirement)
+    return hasOrGroup ? groups.join(" AND ") : groups.join(" ");
+  }
 
   return sanitized;
 }
@@ -239,6 +300,15 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
 
   const deleteMemory = db.query("DELETE FROM memories WHERE id = ?");
 
+  // Manual FTS management (standalone table, no triggers):
+  // stores preprocessed+stemmed content for search, memories table keeps original
+  const insertFts = db.query(
+    "INSERT OR REPLACE INTO memories_fts(rowid, content) VALUES (?, ?)",
+  );
+  const deleteFtsByRowid = db.query(
+    "DELETE FROM memories_fts WHERE rowid = ?",
+  );
+
   const searchFts = db.query<FtsResultRow, [string, number]>(`
     SELECT m.*, bm25(memories_fts) AS bm25_score
     FROM memories_fts fts
@@ -276,14 +346,14 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       const existing = selectRowid.get(memory.metadata.id);
       if (existing) {
         deleteVecByRowid.run(existing.rowid);
+        deleteFtsByRowid.run(existing.rowid);
       }
 
-      // INSERT OR REPLACE into memories
-      // Expand hyphenated terms so FTS5 indexes both forms
+      // Store ORIGINAL content in memories table (for retrieval)
       insertMemory.run(
         memory.metadata.id,
         memory.filePath,
-        expandHyphens(memory.content),
+        memory.content,
         memory.metadata.type,
         memory.metadata.importance,
         memory.metadata.createdAt,
@@ -294,13 +364,16 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
         memory.metadata.source,
       );
 
-      // Get the rowid for the vec table
+      // Get the rowid for the vec and FTS tables
       const row = selectRowid.get(memory.metadata.id);
       if (!row) {
         throw new Error(
           `Failed to retrieve rowid for memory ${memory.metadata.id}`,
         );
       }
+
+      // Index PREPROCESSED content into FTS (stems + hyphens expanded)
+      insertFts.run(row.rowid, preprocessForFts(memory.content));
 
       // Insert embedding if provided
       if (embedding) {
@@ -313,6 +386,7 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
     const existing = selectRowid.get(id);
     if (existing) {
       deleteVecByRowid.run(existing.rowid);
+      deleteFtsByRowid.run(existing.rowid);
     }
     deleteMemory.run(id);
   });
@@ -494,6 +568,26 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       // poolSize/4 ≈ expected relevant results; capped at configured rrfK.
       const k = Math.max(1, Math.min(opts.rrfK, Math.floor(poolSize / 4)));
 
+      // Pre-compute connected entry IDs for connection-proximity boost
+      let connectedIds: Set<string> | null = null;
+      if (opts.contextEntryId) {
+        const connRows = selectConnBoth.all(
+          opts.contextEntryId,
+          opts.contextEntryId,
+        );
+        connectedIds = new Set<string>();
+        for (const c of connRows) {
+          if (c.source_id === opts.contextEntryId)
+            connectedIds.add(c.target_id);
+          else connectedIds.add(c.source_id);
+        }
+      }
+
+      // Normalize boostTags for case-insensitive prefix matching
+      const boostTags = opts.boostTags?.map((t) =>
+        t.toLowerCase().replace(/\/+$/, ""),
+      );
+
       const scored: Array<{ id: string; score: number; memory: Memory }> = [];
 
       for (const id of allIds) {
@@ -520,6 +614,29 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
         // Type-based weight: boost high-value types, penalize low-value
         const typeWeight = TYPE_WEIGHT[memory.metadata.type] ?? 1.0;
         score *= typeWeight;
+
+        // Tag-overlap boost: 10% per matching tag (hierarchical prefix match)
+        if (boostTags && boostTags.length > 0) {
+          const entryTags = memory.metadata.tags;
+          let tagOverlap = 0;
+          for (const bt of boostTags) {
+            for (const et of entryTags) {
+              const etNorm = et.toLowerCase();
+              if (etNorm === bt || etNorm.startsWith(`${bt}/`)) {
+                tagOverlap++;
+                break;
+              }
+            }
+          }
+          if (tagOverlap > 0) {
+            score *= 1 + 0.1 * tagOverlap;
+          }
+        }
+
+        // Connection-proximity boost: 15% for entries connected to context
+        if (connectedIds?.has(id)) {
+          score *= 1.15;
+        }
 
         scored.push({ id, score, memory });
       }
@@ -564,43 +681,25 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       // Get all existing memories before dropping tables
       const allMemories = selectAll.all();
 
-      // Drop and recreate FTS
+      // Drop and recreate FTS (standalone, no triggers)
       db.run("DROP TABLE IF EXISTS memories_fts");
       db.run(`
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
           content,
-          content='memories',
-          content_rowid='rowid',
-          tokenize='porter unicode61'
+          tokenize='unicode61'
         )
       `);
 
-      // Recreate FTS triggers
+      // Drop any legacy triggers from older schema versions
       db.run("DROP TRIGGER IF EXISTS memories_ai");
       db.run("DROP TRIGGER IF EXISTS memories_ad");
       db.run("DROP TRIGGER IF EXISTS memories_au");
-      db.run(`
-        CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-          INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
-        END
-      `);
-      db.run(`
-        CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-          INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
-        END
-      `);
-      db.run(`
-        CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-          INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
-          INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
-        END
-      `);
 
-      // Re-populate FTS from all memories
+      // Re-populate FTS from all memories with preprocessed content
       for (const row of allMemories) {
         db.run("INSERT INTO memories_fts(rowid, content) VALUES (?, ?)", [
           row.rowid,
-          row.content,
+          preprocessForFts(row.content),
         ]);
       }
 
@@ -807,11 +906,11 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       // Clear vec table
       db.run("DELETE FROM memories_vec");
 
-      // Clear memories (FTS triggers fire on each delete)
-      db.run("DELETE FROM memories");
+      // Clear FTS (standalone table, no triggers)
+      db.run("DELETE FROM memories_fts");
 
-      // Rebuild FTS to ensure clean state
-      db.run("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
+      // Clear memories
+      db.run("DELETE FROM memories");
     },
 
     async getAllKnowledgeEntries(): Promise<KnowledgeEntry[]> {
