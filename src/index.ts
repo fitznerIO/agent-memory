@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
+import { createConsolidationAgent } from "./consolidation/agent.ts";
+import type { ExistingEntry } from "./consolidation/types.ts";
 import { createEmbeddingEngine } from "./embedding/engine.ts";
 import type { EmbeddingEngine } from "./embedding/types.ts";
 import { createGitManager } from "./git/manager.ts";
@@ -987,10 +989,119 @@ export function createMemorySystem(
     },
 
     async consolidate(
-      _input?: ConsolidationInput,
+      input?: ConsolidationInput,
     ): Promise<ConsolidationOutput> {
-      // Placeholder — implemented in Feature 2
-      throw new Error("Not implemented");
+      const consolidator = createConsolidationAgent();
+      const dryRun = input?.dryRun ?? false;
+
+      // Gather session notes
+      const notes = (session?.notes ?? []).map((n) => ({
+        noteId: n.noteId,
+        content: n.content,
+        type: n.type,
+        importance: n.importance,
+        tags: [] as string[],
+      }));
+
+      if (notes.length === 0) {
+        return {
+          actions: [],
+          filesCreated: 0,
+          tagsNormalized: 0,
+          duplicatesSkipped: 0,
+          subsumed: 0,
+        };
+      }
+
+      // Gather existing entries for dedup/subsumption checks
+      const allKnowledge = await project.searchIndex.getAllKnowledgeEntries();
+      const existingEntries: ExistingEntry[] = [];
+      for (const entry of allKnowledge) {
+        try {
+          const mem = await project.store.readByPath(entry.filePath);
+          existingEntries.push({
+            id: entry.id,
+            title: entry.title,
+            content: mem.content,
+            type: entry.type,
+            tags: entry.tags,
+          });
+        } catch {
+          // File may not exist
+        }
+      }
+
+      const existingTags = await project.searchIndex.getExistingTags();
+      const actions = consolidator.buildPlan(notes, existingEntries, existingTags);
+
+      if (dryRun) {
+        return {
+          actions,
+          filesCreated: actions.filter((a) => a.type === "create_file").length,
+          tagsNormalized: actions.filter((a) => a.type === "normalize_tags").length,
+          duplicatesSkipped: actions.filter((a) => a.type === "skip_duplicate").length,
+          subsumed: actions.filter((a) => a.type === "subsume").length,
+        };
+      }
+
+      // Execute actions
+      let filesCreated = 0;
+      let tagsNormalized = 0;
+      let duplicatesSkipped = 0;
+      let subsumed = 0;
+
+      for (const action of actions) {
+        switch (action.type) {
+          case "create_file": {
+            if (action.targetType && action.content) {
+              await this.memoryStore({
+                title: action.title ?? "Untitled",
+                type: action.targetType,
+                content: action.content,
+                tags: action.tags,
+              });
+              filesCreated++;
+            }
+            break;
+          }
+          case "subsume": {
+            if (action.targetType && action.content && action.supersedesId) {
+              const result = await this.memoryStore({
+                title: action.title ?? "Untitled",
+                type: action.targetType,
+                content: action.content,
+                tags: action.tags,
+                connections: [
+                  {
+                    target: action.supersedesId,
+                    type: "supersedes",
+                    note: "Superseded by consolidation",
+                  },
+                ],
+              });
+              subsumed++;
+              filesCreated++;
+            }
+            break;
+          }
+          case "skip_duplicate": {
+            duplicatesSkipped++;
+            break;
+          }
+          case "normalize_tags": {
+            tagsNormalized++;
+            break;
+          }
+        }
+      }
+
+      return {
+        actions,
+        filesCreated,
+        tagsNormalized,
+        duplicatesSkipped,
+        subsumed,
+      };
     },
 
     async getArchiveCandidates(
