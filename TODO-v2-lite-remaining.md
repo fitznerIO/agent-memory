@@ -3,11 +3,12 @@
 Erstellt nach Gap-Analyse PRD vs. Implementierung. Stand: 2026-02-09.
 Branch `feature/v2-lite` wurde in `main` gemerged.
 
-**Erstelle einen neuen Feature-Branch `feature/v2-lite-remaining` von `main` bevor du mit der Implementierung beginnst.**
+> **Status: DONE** — Alle 3 Features implementiert auf Branch `feature/v2-lite-remaining`.
+> Commits: `e41988e`, `e293529`, `ac91ba2`, `2f31c03` (code review fixes).
 
 ---
 
-## 1. CLI `rebuild-index` Command (PRD 6.3)
+## 1. CLI `rebuild-index` Command (PRD 6.3) ✅
 
 **Prioritaet:** Hoch (Blocker nach Embedding-Modellwechsel)
 
@@ -32,7 +33,7 @@ Das Embedding-Modell wurde von `Xenova/all-MiniLM-L6-v2` auf `Xenova/paraphrase-
 
 ---
 
-## 2. Consolidation Agent (PRD 9)
+## 2. Consolidation Agent (PRD 9) ✅
 
 **Prioritaet:** Mittel
 
@@ -65,7 +66,7 @@ Der PRD sagt explizit, dass Consolidation schlank bleiben soll. Kein LLM-Call, k
 
 ---
 
-## 3. Decay / Lifecycle Management (PRD 10)
+## 3. Decay / Lifecycle Management (PRD 10) ✅
 
 **Prioritaet:** Niedrig (wird erst bei grosser Wissensbasis relevant)
 

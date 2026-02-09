@@ -5,7 +5,7 @@ SQLite provides derived search indexes, Git handles versioning with semantic com
 
 ## Architecture
 
-Four modules + orchestrator. Each module has types in `types.ts` and implementation in a separate file.
+Five modules + orchestrator. Each module has types in `types.ts` and implementation in a separate file.
 
 | Module | Path | Responsibility |
 |--------|------|----------------|
@@ -13,6 +13,7 @@ Four modules + orchestrator. Each module has types in `types.ts` and implementat
 | Search Index | `src/search/` | FTS5 + sqlite-vec hybrid search via bun:sqlite |
 | Git Manager | `src/git/` | Versioning with isomorphic-git |
 | Embedding Engine | `src/embedding/` | Local embeddings via @huggingface/transformers |
+| Consolidation | `src/consolidation/` | Heuristic-based session note consolidation (no LLM) |
 | Orchestrator | `src/index.ts` | Wires modules together via `createMemorySystem()` |
 
 ## Module Isolation
@@ -31,9 +32,21 @@ bun test tests/memory/    # Run memory module tests
 bun test tests/search/    # Run search module tests
 bun test tests/git/       # Run git module tests
 bun test tests/embedding/ # Run embedding module tests
+bun test tests/consolidation/ # Run consolidation module tests
+bun test tests/integration/   # Run integration tests
 bun run typecheck         # TypeScript strict check
 bun run lint              # Biome linter
 bun run lint:fix          # Auto-fix lint issues
+```
+
+## CLI Commands
+
+```bash
+agent-memory rebuild-index                    # Rebuild search index from all markdown files (re-embeds)
+agent-memory consolidate                      # Consolidate session notes into knowledge files
+agent-memory consolidate --dry-run            # Preview consolidation plan without executing
+agent-memory decay                            # Show archive candidates based on access patterns
+agent-memory decay --max-age 30 --min-access 3  # Custom staleness thresholds
 ```
 
 ## Bun Gotchas
