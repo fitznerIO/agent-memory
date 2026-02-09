@@ -8,8 +8,8 @@
  */
 import {
   existsSync,
-  readdirSync,
   readFileSync,
+  readdirSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -20,7 +20,7 @@ import { parseMarkdown, serializeMarkdown } from "../memory/parser.ts";
 const KNOWN_MAPPINGS: Record<string, string> = {
   // AI
   "claude-sdk": "tech/ai/claude-sdk",
-  "claude": "tech/ai/claude",
+  claude: "tech/ai/claude",
   openai: "tech/ai/openai",
   llm: "tech/ai/llm",
   embeddings: "tech/ai/embeddings",
@@ -66,8 +66,9 @@ export function mapTag(tag: string): string {
   if (normalized.includes("/")) return normalized;
 
   // Check known mappings
-  if (KNOWN_MAPPINGS[normalized]) {
-    return KNOWN_MAPPINGS[normalized]!;
+  const mapped = KNOWN_MAPPINGS[normalized];
+  if (mapped) {
+    return mapped;
   }
 
   // Prefix with _untagged/

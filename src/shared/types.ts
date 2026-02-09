@@ -253,4 +253,3 @@ export interface MemoryTraverseOutput {
     distance: number;
   }>;
 }
-

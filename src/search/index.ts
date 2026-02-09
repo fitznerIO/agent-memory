@@ -574,9 +574,9 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       if (!row) return null;
 
       const tags = selectTagsByEntry.all(id).map((r) => r.tag);
-      const connRows = selectConnBoth.all(id, id);
+      const connRows = selectConnOutgoing.all(id);
       const connections: Connection[] = connRows.map((c) => ({
-        target: c.source_id === id ? c.target_id : c.source_id,
+        target: c.target_id,
         type: c.type as Connection["type"],
         note: c.note ?? undefined,
       }));
@@ -685,9 +685,7 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
 
       // Build query with hierarchical LIKE matching per tag
       // Each tag "tech/ai" matches exact "tech/ai" or prefix "tech/ai/%"
-      const conditions = tags.map(
-        () => "(tag = ? OR tag LIKE ? ESCAPE '\\')",
-      );
+      const conditions = tags.map(() => "(tag = ? OR tag LIKE ? ESCAPE '\\')");
       const params: string[] = [];
       for (const tag of tags) {
         const normalized = tag.toLowerCase().replace(/\/+$/, "");

@@ -213,8 +213,11 @@ describe("SearchIndex v2-lite", () => {
       await idx.indexKnowledge(makeKnowledgeEntry("dec-002", "decision"));
       await idx.indexKnowledge(makeKnowledgeEntry("inc-001", "incident"));
 
+      // Forward + inverse rows (mimics memoryConnect behavior)
       await idx.insertConnection("dec-001", "dec-002", "related", "Same topic");
+      await idx.insertConnection("dec-002", "dec-001", "related", "Same topic");
       await idx.insertConnection("inc-001", "dec-001", "builds_on");
+      await idx.insertConnection("dec-001", "inc-001", "extended_by");
 
       const result = await idx.getKnowledgeById("dec-001");
       expect(result).not.toBeNull();
@@ -226,10 +229,10 @@ describe("SearchIndex v2-lite", () => {
       expect(outgoing!.type).toBe("related");
       expect(outgoing!.note).toBe("Same topic");
 
-      // One incoming connection (inc-001 -> dec-001), target should be inc-001
-      const incoming = result!.connections.find((c) => c.target === "inc-001");
-      expect(incoming).toBeDefined();
-      expect(incoming!.type).toBe("builds_on");
+      // Inverse of incoming connection (inc-001 builds_on dec-001 → dec-001 extended_by inc-001)
+      const inverse = result!.connections.find((c) => c.target === "inc-001");
+      expect(inverse).toBeDefined();
+      expect(inverse!.type).toBe("extended_by");
     });
 
     test("returns entry with empty tags and connections when none exist", async () => {
@@ -786,8 +789,11 @@ describe("SearchIndex v2-lite", () => {
       await idx.insertTags("inc-001", ["production"]);
       await idx.insertTags("pat-001", ["architecture"]);
 
+      // Forward + inverse rows (mimics memoryConnect behavior)
       await idx.insertConnection("dec-001", "inc-001", "related");
+      await idx.insertConnection("inc-001", "dec-001", "related");
       await idx.insertConnection("pat-001", "dec-001", "builds_on");
+      await idx.insertConnection("dec-001", "pat-001", "extended_by");
 
       // Each entry should be independently retrievable
       const dec = await idx.getKnowledgeById("dec-001");

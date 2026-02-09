@@ -8,6 +8,7 @@ import {
   PathTraversalError,
 } from "../shared/errors.ts";
 import type { Memory, MemoryMetadata, MemoryType } from "../shared/types.ts";
+import { parseV2LiteId } from "../shared/utils.ts";
 import { parseMarkdown, serializeMarkdown } from "./parser.ts";
 import type { MemoryFilter, MemoryStore } from "./types.ts";
 
@@ -55,17 +56,52 @@ async function findMemoryById(
   baseDir: string,
   id: string,
 ): Promise<string | null> {
-  // Search all type directories for the file matching id
+  // Fast-path: v2-lite IDs (e.g. "dec-001") encode their type → single readdir
+  const parsed = parseV2LiteId(id);
+  if (parsed) {
+    const targetDir = join(baseDir, parsed.dir);
+    try {
+      const files = await readdir(targetDir);
+      const prefix = `${id}-`;
+      const match = files.find(
+        (f) => f.startsWith(prefix) && f.endsWith(".md"),
+      );
+      if (match) {
+        return join(targetDir, match);
+      }
+    } catch {
+      // Directory might not exist
+    }
+    return null;
+  }
+
+  // Slow path: v1 UUIDs — scan all type directories
   for (const type of VALID_TYPES) {
     const typeDir = join(baseDir, getTypeDir(type));
     try {
-      const files = await readdir(typeDir);
-      for (const file of files) {
-        if (file.endsWith(".md")) {
-          const filePath = join(typeDir, file);
+      const entries = await readdir(typeDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isFile() && entry.name.endsWith(".md")) {
+          const filePath = join(typeDir, entry.name);
           const memory = await readMemoryFile(filePath);
           if (memory.metadata.id === id) {
             return filePath;
+          }
+        } else if (entry.isDirectory()) {
+          // v2-lite: search subdirectories (entities/, decisions/, notes/, etc.)
+          try {
+            const subEntries = await readdir(join(typeDir, entry.name));
+            for (const subFile of subEntries) {
+              if (subFile.endsWith(".md")) {
+                const filePath = join(typeDir, entry.name, subFile);
+                const memory = await readMemoryFile(filePath);
+                if (memory.metadata.id === id) {
+                  return filePath;
+                }
+              }
+            }
+          } catch {
+            // Subdirectory read error, skip
           }
         }
       }
@@ -152,21 +188,29 @@ export function createMemoryStore(config: MemoryConfig): MemoryStore {
         throw new MemoryNotFoundError(id);
       }
 
-      const memory = await readMemoryFile(filePath);
-      const updatedMetadata: MemoryMetadata = {
-        ...memory.metadata,
-        updatedAt: Date.now(),
-      };
+      // Read raw file to preserve original frontmatter format
+      const file = Bun.file(filePath);
+      const raw = await file.text();
+      const doc = parseMarkdown(raw);
 
-      const doc = {
-        frontmatter: updatedMetadata as unknown as Record<string, unknown>,
-        body: newContent,
-      };
+      // Update the correct date field based on frontmatter format
+      if (doc.frontmatter.updated !== undefined) {
+        // v2-lite format: string date
+        doc.frontmatter.updated = new Date().toISOString().slice(0, 10);
+      } else {
+        // v1 format: numeric timestamp
+        doc.frontmatter.updatedAt = Date.now();
+      }
+
+      doc.body = newContent;
       const serialized = serializeMarkdown(doc);
       await Bun.write(filePath, serialized);
 
+      // Cast frontmatter back to MemoryMetadata for return type compatibility
+      const metadata = doc.frontmatter as unknown as MemoryMetadata;
+
       return {
-        metadata: updatedMetadata,
+        metadata,
         content: newContent,
         filePath: relative(config.baseDir, filePath),
       };
@@ -185,46 +229,51 @@ export function createMemoryStore(config: MemoryConfig): MemoryStore {
     async list(filter?: MemoryFilter) {
       const memories: Memory[] = [];
 
+      async function collectFromDir(dir: string): Promise<void> {
+        const entries = await readdir(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = join(dir, entry.name);
+          if (entry.isFile() && entry.name.endsWith(".md")) {
+            const memory = await readMemoryFile(fullPath);
+
+            // Apply filters
+            if (
+              filter?.importance &&
+              filter.importance !== memory.metadata.importance
+            ) {
+              continue;
+            }
+
+            if (filter?.since && memory.metadata.createdAt < filter.since) {
+              continue;
+            }
+
+            if (
+              filter?.tags &&
+              filter.tags.length > 0 &&
+              !filter.tags.some((tag) => memory.metadata.tags.includes(tag))
+            ) {
+              continue;
+            }
+
+            memories.push({
+              ...memory,
+              filePath: relative(config.baseDir, fullPath),
+            });
+          } else if (entry.isDirectory()) {
+            await collectFromDir(fullPath);
+          }
+        }
+      }
+
       for (const type of VALID_TYPES) {
-        // Skip if type filter doesn't match
         if (filter?.type && filter.type !== type) {
           continue;
         }
 
         const typeDir = join(config.baseDir, getTypeDir(type));
         try {
-          const files = await readdir(typeDir);
-          for (const file of files) {
-            if (file.endsWith(".md")) {
-              const filePath = join(typeDir, file);
-              const memory = await readMemoryFile(filePath);
-
-              // Apply filters
-              if (
-                filter?.importance &&
-                filter.importance !== memory.metadata.importance
-              ) {
-                continue;
-              }
-
-              if (filter?.since && memory.metadata.createdAt < filter.since) {
-                continue;
-              }
-
-              if (
-                filter?.tags &&
-                filter.tags.length > 0 &&
-                !filter.tags.some((tag) => memory.metadata.tags.includes(tag))
-              ) {
-                continue;
-              }
-
-              memories.push({
-                ...memory,
-                filePath: relative(config.baseDir, filePath),
-              });
-            }
-          }
+          await collectFromDir(typeDir);
         } catch {
           // Directory might not exist
         }

@@ -1,6 +1,8 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createMemoryStore } from "../../src/memory/store.ts";
+import { parseMarkdown, serializeMarkdown } from "../../src/memory/parser.ts";
 import { InvalidMemoryTypeError, MemoryNotFoundError, PathTraversalError } from "../../src/shared/errors.ts";
 import { createTempDir, cleanupTempDir } from "../helpers/fixtures.ts";
 import type { MemoryConfig } from "../../src/shared/config.ts";
@@ -414,6 +416,130 @@ describe("MemoryStore", () => {
       } finally {
         await cleanupTempDir(emptyConfig.baseDir);
       }
+    });
+  });
+
+  describe("findMemoryById fast-path (v2-lite)", () => {
+    test("finds v2-lite file by ID via fast-path (no full scan)", async () => {
+      const v2Dir = await createTempDir();
+      const v2Config: MemoryConfig = {
+        baseDir: v2Dir,
+        sqlitePath: join(v2Dir, ".index", "search.sqlite"),
+        embeddingModel: "test",
+        embeddingDimensions: 384,
+        hybridDefaults: { limit: 5, minScore: 0.3, weightFts: 0.3, weightVector: 0.5, weightRecency: 0.2, rrfK: 60 },
+        maxCoreTokens: 4000,
+      };
+
+      try {
+        // Create a v2-lite file in the expected subdirectory
+        const notesDir = join(v2Dir, "semantic", "notes");
+        mkdirSync(notesDir, { recursive: true });
+
+        const frontmatter = {
+          id: "note-001",
+          title: "Test Note",
+          type: "note",
+          tags: ["test"],
+          created: "2026-02-09",
+          updated: "2026-02-09",
+          connections: [],
+        };
+        const content = serializeMarkdown({ frontmatter, body: "Hello from v2-lite" });
+        writeFileSync(join(notesDir, "note-001-test-note.md"), content);
+
+        const store = createMemoryStore(v2Config);
+        const memory = await store.read("note-001");
+
+        expect((memory.metadata as unknown as Record<string, unknown>).id).toBe("note-001");
+        expect(memory.content).toBe("Hello from v2-lite");
+      } finally {
+        await cleanupTempDir(v2Dir);
+      }
+    });
+
+    test("returns MemoryNotFoundError for unknown v2-lite ID", async () => {
+      const store = createMemoryStore(config);
+      try {
+        await store.read("dec-999");
+        expect(true).toBe(false);
+      } catch (e) {
+        expect(e instanceof MemoryNotFoundError).toBe(true);
+      }
+    });
+  });
+
+  describe("update format preservation (v2-lite)", () => {
+    test("preserves v2-lite frontmatter format on update", async () => {
+      const v2Dir = await createTempDir();
+      const v2Config: MemoryConfig = {
+        baseDir: v2Dir,
+        sqlitePath: join(v2Dir, ".index", "search.sqlite"),
+        embeddingModel: "test",
+        embeddingDimensions: 384,
+        hybridDefaults: { limit: 5, minScore: 0.3, weightFts: 0.3, weightVector: 0.5, weightRecency: 0.2, rrfK: 60 },
+        maxCoreTokens: 4000,
+      };
+
+      try {
+        // Create a v2-lite file
+        const entitiesDir = join(v2Dir, "semantic", "entities");
+        mkdirSync(entitiesDir, { recursive: true });
+
+        const frontmatter = {
+          id: "entity-001",
+          title: "Test Entity",
+          type: "entity",
+          tags: ["test"],
+          created: "2026-01-15",
+          updated: "2026-01-15",
+          connections: [],
+        };
+        const content = serializeMarkdown({ frontmatter, body: "Original content" });
+        writeFileSync(join(entitiesDir, "entity-001-test-entity.md"), content);
+
+        const store = createMemoryStore(v2Config);
+        const updated = await store.update("entity-001", "Updated content");
+
+        expect(updated.content).toBe("Updated content");
+
+        // Read back raw file and verify frontmatter format is preserved
+        const rawFile = await Bun.file(join(entitiesDir, "entity-001-test-entity.md")).text();
+        const doc = parseMarkdown(rawFile);
+
+        // Should still have v2-lite fields
+        expect(doc.frontmatter.updated).toBeDefined();
+        expect(typeof doc.frontmatter.updated).toBe("string");
+        expect(doc.frontmatter.created).toBe("2026-01-15");
+
+        // Should NOT have v1 updatedAt field
+        expect(doc.frontmatter.updatedAt).toBeUndefined();
+      } finally {
+        await cleanupTempDir(v2Dir);
+      }
+    });
+
+    test("preserves v1 frontmatter format on update", async () => {
+      const store = createMemoryStore(config);
+      const created = await store.create({
+        metadata: {
+          title: "V1 Update Test",
+          type: "semantic",
+          tags: ["v1"],
+          importance: "medium",
+          source: "test",
+        },
+        content: "V1 original content",
+        filePath: "semantic/v1-update.md",
+      });
+
+      const updated = await store.update(created.metadata.id, "V1 updated content");
+      expect(updated.content).toBe("V1 updated content");
+
+      // v1 files have updatedAt as number — verify it was updated
+      const fm = updated.metadata as unknown as Record<string, unknown>;
+      expect(typeof fm.updatedAt).toBe("number");
+      expect(fm.updated).toBeUndefined();
     });
   });
 });

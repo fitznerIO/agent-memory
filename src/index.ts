@@ -15,6 +15,7 @@ export type { MemoryConfig } from "./shared/config.ts";
 export { findProjectRoot } from "./shared/config.ts";
 import {
   getInverseType,
+  getLastModified,
   knowledgeToMemoryType,
   knowledgeTypeDir,
   slugify,
@@ -279,15 +280,12 @@ export function createMemorySystem(
       const doc = parseMarkdown(raw);
 
       // Get existing connections or initialize
-      const connections = (
-        doc.frontmatter.connections as Array<Record<string, unknown>>
-      ) ?? [];
+      const connections =
+        (doc.frontmatter.connections as Array<Record<string, unknown>>) ?? [];
 
       // Check if connection already exists
       const exists = connections.some(
-        (c) =>
-          c.target === targetId &&
-          c.type === connType,
+        (c) => c.target === targetId && c.type === connType,
       );
 
       if (!exists) {
@@ -306,7 +304,10 @@ export function createMemorySystem(
     } catch (err) {
       // Best-effort: file may not exist yet (e.g. during migration)
       if (process.env.DEBUG) {
-        console.warn(`[agent-memory] Failed to update frontmatter for ${entryId}:`, err);
+        console.warn(
+          `[agent-memory] Failed to update frontmatter for ${entryId}:`,
+          err,
+        );
       }
     }
   }
@@ -416,8 +417,7 @@ export function createMemorySystem(
       }
 
       // Fetch more results to account for post-filtering
-      const fetchLimit =
-        tagFilterIds || connFilterIds ? limit * 5 : limit;
+      const fetchLimit = tagFilterIds || connFilterIds ? limit * 5 : limit;
 
       // Search project store
       const projectResults = await project.searchIndex.searchHybrid(
@@ -434,7 +434,11 @@ export function createMemorySystem(
           queryEmbedding.vector,
           { limit: fetchLimit, minScore: input.minScore ?? 0.3 },
         );
-        rawResults = mergeSearchResults(projectResults, globalResults, fetchLimit);
+        rawResults = mergeSearchResults(
+          projectResults,
+          globalResults,
+          fetchLimit,
+        );
       } else {
         rawResults = projectResults;
       }
@@ -458,8 +462,7 @@ export function createMemorySystem(
       const enrichedResults = await Promise.all(
         finalResults.map(async (r) => {
           const id = r.memory.metadata.id;
-          const knowledgeEntry =
-            await project.searchIndex.getKnowledgeById(id);
+          const knowledgeEntry = await project.searchIndex.getKnowledgeById(id);
 
           return {
             content: r.memory.content,
@@ -495,9 +498,13 @@ export function createMemorySystem(
         memory = await global.store.readByPath(input.path);
       }
 
+      const lastModified = getLastModified(
+        memory.metadata as unknown as Record<string, unknown>,
+      );
+
       return {
         content: memory.content,
-        lastModified: new Date(memory.metadata.updatedAt).toISOString(),
+        lastModified,
         wordCount: memory.content.split(/\s+/).filter(Boolean).length,
       };
     },
@@ -584,14 +591,17 @@ export function createMemorySystem(
     },
 
     async commit(input: MemoryCommitInput): Promise<MemoryCommitOutput> {
+      // Capture status BEFORE commit to count changed files
+      const statusBefore = await project.git.status();
+      const filesChanged =
+        statusBefore.staged.length +
+        statusBefore.modified.length +
+        statusBefore.untracked.length;
+
       const hash = await project.git.commit(
         input.message,
         input.type as CommitType,
       );
-
-      const status = await project.git.status();
-      const filesChanged =
-        status.staged.length + status.modified.length + status.untracked.length;
 
       return {
         success: true,
@@ -602,9 +612,7 @@ export function createMemorySystem(
 
     // -- v2-lite tools --------------------------------------------------------
 
-    async memoryStore(
-      input: MemoryStoreInput,
-    ): Promise<MemoryStoreOutput> {
+    async memoryStore(input: MemoryStoreInput): Promise<MemoryStoreOutput> {
       const now = new Date();
       const isoNow = now.toISOString();
 

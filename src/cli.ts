@@ -115,10 +115,11 @@ Examples:
   // Handle migrate command separately (no MemorySystem needed)
   if (command === "migrate") {
     const step = requireFlag(flags, "step");
-    const projectDir = flags["project-dir"] ?? findProjectRoot(process.cwd());
-    const baseDir = projectDir
-      ? join(projectDir, ".agent-memory")
-      : join(process.cwd(), ".agent-memory");
+    // findProjectRoot() already returns <root>/.agent-memory
+    // --project-dir is a raw directory, needs .agent-memory appended
+    const baseDir = flags["project-dir"]
+      ? join(flags["project-dir"], ".agent-memory")
+      : findProjectRoot(process.cwd());
 
     switch (step) {
       case "split-files": {
@@ -177,6 +178,10 @@ Examples:
           minScore: flags["min-score"]
             ? Number.parseFloat(flags["min-score"])
             : undefined,
+          tags: flags.tags
+            ? flags.tags.split(",").map((t) => t.trim())
+            : undefined,
+          connected_to: flags["connected-to"] ?? flags.connected_to,
         });
         console.log(JSON.stringify(result, null, 2));
         break;
@@ -235,7 +240,9 @@ Examples:
             | "workflow"
             | "note",
           content: requireFlag(flags, "content"),
-          tags: flags.tags ? flags.tags.split(",").map((t) => t.trim()) : undefined,
+          tags: flags.tags
+            ? flags.tags.split(",").map((t) => t.trim())
+            : undefined,
         });
         console.log(JSON.stringify(result, null, 2));
         break;
@@ -264,9 +271,7 @@ Examples:
             | "outgoing"
             | "incoming"
             | "both",
-          depth: flags.depth
-            ? Number.parseInt(flags.depth, 10)
-            : undefined,
+          depth: flags.depth ? Number.parseInt(flags.depth, 10) : undefined,
         });
         console.log(JSON.stringify(result, null, 2));
         break;

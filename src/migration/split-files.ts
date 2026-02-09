@@ -6,18 +6,44 @@
  *
  * PRD 11.1 — agent-memory migrate split-files
  */
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { serializeMarkdown } from "../memory/parser.ts";
 import type { KnowledgeType } from "../shared/types.ts";
 import { TYPE_PREFIX, slugify } from "../shared/utils.ts";
 
 /** Map bulk file paths to their knowledge type. */
-const BULK_FILE_MAP: Array<{ glob: string; type: KnowledgeType; subdir: string }> = [
-  { glob: "semantic/decisions.md", type: "decision", subdir: "semantic/decisions" },
-  { glob: "episodic/incidents.md", type: "incident", subdir: "episodic/incidents" },
-  { glob: "procedural/workflows.md", type: "workflow", subdir: "procedural/workflows" },
-  { glob: "procedural/patterns.md", type: "pattern", subdir: "procedural/patterns" },
+const BULK_FILE_MAP: Array<{
+  glob: string;
+  type: KnowledgeType;
+  subdir: string;
+}> = [
+  {
+    glob: "semantic/decisions.md",
+    type: "decision",
+    subdir: "semantic/decisions",
+  },
+  {
+    glob: "episodic/incidents.md",
+    type: "incident",
+    subdir: "episodic/incidents",
+  },
+  {
+    glob: "procedural/workflows.md",
+    type: "workflow",
+    subdir: "procedural/workflows",
+  },
+  {
+    glob: "procedural/patterns.md",
+    type: "pattern",
+    subdir: "procedural/patterns",
+  },
 ];
 
 export interface SplitSection {
@@ -125,7 +151,8 @@ export function splitBulkFile(
   const today = new Date().toISOString().slice(0, 10);
 
   for (let i = 0; i < sections.length; i++) {
-    const section = sections[i]!;
+    const section = sections[i];
+    if (!section) continue;
     const counter = (startCounter ?? 1) + i;
     const id = `${prefix}-${String(counter).padStart(3, "0")}`;
     const slug = slugify(section.title);
@@ -143,7 +170,10 @@ export function splitBulkFile(
       connections: [],
     };
 
-    const serialized = serializeMarkdown({ frontmatter, body: section.content });
+    const serialized = serializeMarkdown({
+      frontmatter,
+      body: section.content,
+    });
     writeFileSync(absFilePath, serialized);
     createdFiles.push(relPath);
   }
@@ -165,7 +195,12 @@ export function migrateSplitFiles(baseDir: string): SplitResult[] {
   const results: SplitResult[] = [];
 
   for (const mapping of BULK_FILE_MAP) {
-    const result = splitBulkFile(baseDir, mapping.glob, mapping.type, mapping.subdir);
+    const result = splitBulkFile(
+      baseDir,
+      mapping.glob,
+      mapping.type,
+      mapping.subdir,
+    );
     results.push(result);
   }
 
