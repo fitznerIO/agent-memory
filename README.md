@@ -13,33 +13,37 @@ bun install && bun test
                                 │
                 ┌───────────────┼───────────────┐
                 │               │               │
-          ┌───────────┐   ┌──────────┐   ┌────────────┐
-          │  Tools    │   │Lifecycle │   │ Internals  │
-          │  API      │   │          │   │            │
-          ├───────────┤   ├──────────┤   ├────────────┤
-          │ note      │   │ start    │   │ store      │
-          │ search    │   │ stop     │   │ search     │
-          │ read      │   └──────────┘   │ git        │
-          │ update    │                  │ embedding  │
-          │ forget    │                  └────────────┘
-          │ commit    │
-          └─────┬─────┘
-                │
-    ┌───────────┼───────────┬───────────┐
-    │           │           │           │
-┌────────┐ ┌────────┐ ┌─────────┐ ┌──────────┐
-│ Memory │ │ Search │ │   Git   │ │Embedding │
-│ Store  │ │ Index  │ │ Manager │ │ Engine   │
-├────────┤ ├────────┤ ├─────────┤ ├──────────┤
-│ .md    │ │ FTS5   │ │isomor-  │ │MiniLM-L6 │
-│ files  │ │sqlite- │ │phic-git │ │384 dims  │
-│ YAML   │ │vec RRF │ │         │ │local     │
-└────────┘ └────────┘ └─────────┘ └──────────┘
+          ┌───────────────┐┌──────────┐   ┌────────────┐
+          │  Tools API    ││Lifecycle │   │ Internals  │
+          │               ││          │   │            │
+          ├───────────────┤├──────────┤   ├────────────┤
+          │ note          ││ start    │   │ store      │
+          │ search        ││ stop     │   │ search     │
+          │ read          │└──────────┘   │ git        │
+          │ update        │               │ embedding  │
+          │ forget        │               └────────────┘
+          │ commit        │
+          │───────────────│
+          │ memoryStore   │  v2-lite
+          │ memoryConnect │  knowledge
+          │ memoryTraverse│  graph
+          └───────┬───────┘
+                  │
+      ┌───────────┼───────────┬───────────┐
+      │           │           │           │
+  ┌────────┐ ┌────────┐ ┌─────────┐ ┌──────────┐
+  │ Memory │ │ Search │ │   Git   │ │Embedding │
+  │ Store  │ │ Index  │ │ Manager │ │ Engine   │
+  ├────────┤ ├────────┤ ├─────────┤ ├──────────┤
+  │ .md    │ │ FTS5   │ │isomor-  │ │MiniLM-L6 │
+  │ files  │ │sqlite- │ │phic-git │ │384 dims  │
+  │ YAML   │ │vec RRF │ │         │ │local     │
+  └────────┘ └────────┘ └─────────┘ └──────────┘
 ```
 
 ## Architecture
 
-Four isolated modules plus an orchestrator. Modules never import from each other — the orchestrator in `src/index.ts` is the sole wiring point.
+Four isolated modules plus an orchestrator and migrations. Modules never import from each other — the orchestrator in `src/index.ts` is the sole wiring point.
 
 ```
 src/
@@ -51,7 +55,7 @@ src/
 │   └── types.ts          MemoryStore interface
 ├── search/
 │   ├── index.ts          FTS5 + sqlite-vec hybrid search
-│   ├── schema.sql        SQLite table definitions
+│   ├── schema.sql        SQLite table definitions (memories, knowledge, connections, tags)
 │   └── types.ts          SearchIndex interface
 ├── git/
 │   ├── manager.ts        Git versioning via isomorphic-git
@@ -59,10 +63,15 @@ src/
 ├── embedding/
 │   ├── engine.ts         Local embeddings via @huggingface/transformers
 │   └── types.ts          EmbeddingEngine interface
+├── migration/
+│   ├── split-files.ts    Split bulk .md into individual knowledge files
+│   ├── namespace-tags.ts Convert flat tags to hierarchical namespaces
+│   └── discover-connections.ts  Auto-discover related entries via search
 └── shared/
     ├── types.ts          Shared domain types (Memory, SearchResult, ...)
     ├── config.ts         MemoryConfig + defaults
-    └── errors.ts         Custom error classes
+    ├── errors.ts         Custom error classes
+    └── utils.ts          v2-lite helpers (slugify, parseV2LiteId, knowledgeTypeDir, ...)
 ```
 
 ## Modules
@@ -95,6 +104,76 @@ source: agent-session
 ---
 TypeScript generics allow you to write reusable, type-safe functions.
 ```
+
+### v2-lite: Knowledge Graph
+
+v2-lite adds structured knowledge types, bidirectional connections, sequential IDs, and namespace tags on top of the base memory store.
+
+#### Knowledge Types
+
+| Type | Prefix | Directory | Description |
+|------|--------|-----------|-------------|
+| `decision` | `dec` | `semantic/decisions/` | Architectural and design decisions |
+| `entity` | `entity` | `semantic/entities/` | People, tools, services, concepts |
+| `note` | `note` | `semantic/notes/` | General knowledge and facts |
+| `incident` | `inc` | `episodic/incidents/` | Bugs, outages, debugging sessions |
+| `session` | `session` | `episodic/sessions/` | Work sessions and conversation logs |
+| `pattern` | `pat` | `procedural/patterns/` | Recurring patterns and best practices |
+| `workflow` | `wf` | `procedural/workflows/` | Step-by-step processes and how-tos |
+
+#### Directory Structure
+
+```
+<project>/.agent-memory/
+├── semantic/
+│   ├── decisions/       dec-001-webhook-statt-polling.md
+│   ├── entities/        entity-001-stenciljs.md
+│   └── notes/           note-001-typescript-tips.md
+├── episodic/
+│   ├── incidents/       inc-001-api-timeout.md
+│   └── sessions/        session-001-refactoring.md
+└── procedural/
+    ├── patterns/        pat-001-factory-pattern.md
+    └── workflows/       wf-001-deploy-pipeline.md
+```
+
+#### v2-lite Frontmatter
+
+```markdown
+---
+id: dec-001
+title: Webhook statt Polling
+type: decision
+tags: [tech/api, patterns/integration]
+created: "2025-06-15"
+updated: "2025-06-15"
+connections:
+  - target: inc-001
+    type: related
+    note: Triggered by API timeout incident
+  - target: pat-002
+    type: builds_on
+---
+We switched from polling to webhooks because...
+```
+
+Key differences from v1: sequential IDs (`dec-001`), string dates (`YYYY-MM-DD`), hierarchical namespace tags (`tech/api`), and inline connections.
+
+#### Connections
+
+| Type | Inverse | Description |
+|------|---------|-------------|
+| `related` | `related` | General bidirectional relationship |
+| `builds_on` | `extended_by` | Entry extends or refines another |
+| `contradicts` | `contradicts` | Entries conflict or supersede reasoning |
+| `part_of` | `contains` | Entry is a component of another |
+| `supersedes` | `superseded_by` | Entry replaces an older one |
+
+Connections are always **bidirectional** — creating `dec-001 --builds_on--> pat-002` automatically creates `pat-002 --extended_by--> dec-001`.
+
+#### Connection Discovery
+
+When you store a new entry, the system automatically searches for related existing entries using FTS5 + vector similarity and suggests connections. This keeps the knowledge graph growing organically.
 
 ### Search Index
 
@@ -172,6 +251,9 @@ bun run cli -- note --content "User prefers TypeScript" --type semantic --import
 # Search memories
 bun run cli -- search --query "TypeScript preferences" --limit 5
 
+# Search with v2-lite filters
+bun run cli -- search --query "API integration" --tags "tech/api" --connected-to dec-001
+
 # Read a specific memory
 bun run cli -- read --path "semantic/abc123.md"
 
@@ -183,6 +265,21 @@ bun run cli -- forget --query "outdated info" --scope entry --confirm
 
 # Commit changes to git
 bun run cli -- commit --message "Session notes" --type consolidate
+
+# v2-lite: Store a knowledge entry
+bun run cli -- store --title "Webhook statt Polling" --type decision \
+  --content "We switched to webhooks because..." --tags "tech/api,patterns/integration"
+
+# v2-lite: Connect two entries
+bun run cli -- connect --source dec-001 --target inc-001 --type related --note "Related incident"
+
+# v2-lite: Traverse the knowledge graph
+bun run cli -- traverse --start dec-001 --direction both --depth 2
+
+# v2-lite: Run a migration step
+bun run cli -- migrate --step split-files
+bun run cli -- migrate --step namespace-tags
+bun run cli -- migrate --step discover-connections
 ```
 
 Global flags:
@@ -236,8 +333,15 @@ my-project/
     ├── .index/search.sqlite  Search index
     ├── core/
     ├── semantic/
+    │   ├── decisions/        v2-lite knowledge files
+    │   ├── entities/
+    │   └── notes/
     ├── episodic/
+    │   ├── incidents/
+    │   └── sessions/
     └── procedural/
+        ├── patterns/
+        └── workflows/
 ```
 
 A **global store** at `~/.agent-memory/` is also searched by default. Use it for cross-project knowledge (preferences, general patterns). Search results include `storeSource: "project" | "global"` so you know where each result came from.
@@ -274,15 +378,52 @@ const memory = createMemorySystem({
 
 await memory.start();
 
+// v1: Save a session note
 await memory.note({
   content: "User prefers TypeScript over JavaScript",
   type: "semantic",
   importance: "medium",
 });
 
+// v1: Hybrid search
 const results = await memory.search({
   query: "TypeScript preferences",
   limit: 5,
+});
+
+// v2-lite: Store a knowledge entry
+const entry = await memory.memoryStore({
+  title: "Webhook statt Polling",
+  type: "decision",
+  content: "We switched to webhooks because...",
+  tags: ["tech/api", "patterns/integration"],
+  connections: [{ target: "inc-001", type: "related" }],
+});
+// → { id: "dec-001", file_path: "semantic/decisions/dec-001-webhook-statt-polling.md",
+//     suggested_connections: [...], existing_tags: [...] }
+
+// v2-lite: Connect two entries
+await memory.memoryConnect({
+  source_id: "dec-001",
+  target_id: "pat-002",
+  type: "builds_on",
+});
+// → { success: true, inverse_type: "extended_by" }
+
+// v2-lite: Traverse the knowledge graph
+const graph = await memory.memoryTraverse({
+  start_id: "dec-001",
+  direction: "both",
+  depth: 2,
+});
+// → { results: [{ id: "inc-001", title: "API Timeout", type: "incident",
+//                  connection_type: "related", distance: 1 }, ...] }
+
+// v2-lite: Search with tags and graph filters
+const filtered = await memory.search({
+  query: "API integration",
+  tags: ["tech/api"],
+  connected_to: "dec-001",
 });
 
 await memory.commit({
@@ -296,11 +437,14 @@ await memory.stop();
 | Method | Input | Description |
 |--------|-------|-------------|
 | `note` | `{ content, type, importance }` | Save a session note |
-| `search` | `{ query, type?, limit?, minScore? }` | Hybrid search across all memories |
+| `search` | `{ query, type?, limit?, minScore?, tags?, connected_to? }` | Hybrid search across all memories |
 | `read` | `{ path }` | Read a specific memory file |
 | `update` | `{ path, content, reason }` | Update content + auto-reindex |
 | `forget` | `{ query, scope, confirm }` | Delete matching memories |
 | `commit` | `{ message, type }` | Git commit with semantic type |
+| `memoryStore` | `{ title, type, content, tags?, connections? }` | Store a v2-lite knowledge entry |
+| `memoryConnect` | `{ source_id, target_id, type, note? }` | Create bidirectional connection |
+| `memoryTraverse` | `{ start_id, direction, types?, depth? }` | BFS traversal of the knowledge graph |
 
 ### Exported Types
 
@@ -328,6 +472,17 @@ import type {
   MemoryForgetOutput,
   MemoryCommitInput,
   MemoryCommitOutput,
+  // v2-lite types
+  KnowledgeType,      // "decision" | "incident" | "entity" | "pattern" | "workflow" | "note" | "session"
+  ConnectionType,     // "related" | "builds_on" | "contradicts" | "part_of" | "supersedes"
+  Connection,         // { target, type, note? }
+  KnowledgeEntry,     // Knowledge node in the graph (id, title, type, tags, connections, ...)
+  MemoryStoreInput,
+  MemoryStoreOutput,
+  MemoryConnectInput,
+  MemoryConnectOutput,
+  MemoryTraverseInput,
+  MemoryTraverseOutput,
 } from "agent-memory";
 ```
 
@@ -336,8 +491,8 @@ import type {
 ```
   Agent Session
        │
-       │  note("User prefers TS")
-       ▼
+       │  note("User prefers TS")           memoryStore({ title, type, content })
+       ▼                                     ▼
   ┌───────────────────┐    write     ┌──────────────────┐
   │ Memory Store      │────────────▶ │ semantic/abc.md  │
   │ (CRUD)            │              │ (YAML + content) │
@@ -349,11 +504,14 @@ import type {
   │ Embedding Engine  │────────▶│ Search Index      │
   │ (MiniLM-L6)      │  384d   │ (SQLite)          │
   └───────────────────┘ vector  │  ├ memories table │
+                                │  ├ knowledge table│  v2-lite
+                                │  ├ connections    │  v2-lite
+                                │  ├ entry_tags     │  v2-lite
                                 │  ├ FTS5 (text)    │
                                 │  └ vec0 (vectors) │
                                 └─────────┬─────────┘
                                           │
-                                          │ hybrid search
+                                          │ hybrid search + graph traversal
                                           ▼
                                 ┌───────────────────┐
                                 │ RRF Merge         │
@@ -374,7 +532,7 @@ import type {
 ## Commands
 
 ```bash
-bun test                    # All tests (96)
+bun test                    # All tests (234)
 bun run test:memory         # Memory store + parser (25)
 bun run test:search         # Search index (17)
 bun run test:git            # Git manager (22)
