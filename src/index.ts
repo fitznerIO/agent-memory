@@ -508,6 +508,17 @@ export function createMemorySystem(
         }),
       );
 
+      // Access tracking: update last_accessed and access_count for returned results
+      for (const r of enrichedResults) {
+        if (r.id) {
+          try {
+            await project.searchIndex.updateAccessTracking(r.id);
+          } catch {
+            // Best-effort
+          }
+        }
+      }
+
       return {
         results: enrichedResults,
         totalFound: enrichedResults.length,
@@ -522,6 +533,14 @@ export function createMemorySystem(
         // Fall back to global store if available
         if (!global) throw new Error(`Memory not found: ${input.path}`);
         memory = await global.store.readByPath(input.path);
+      }
+
+      // Access tracking: update last_accessed and access_count
+      const memId = memory.metadata.id;
+      try {
+        await project.searchIndex.updateAccessTracking(memId);
+      } catch {
+        // Best-effort: entry may not exist in knowledge table
       }
 
       const lastModified = getLastModified(
@@ -1105,10 +1124,98 @@ export function createMemorySystem(
     },
 
     async getArchiveCandidates(
-      _options?: { maxAgeDays?: number; minAccessCount?: number },
+      options?: { maxAgeDays?: number; minAccessCount?: number },
     ): Promise<DecayOutput> {
-      // Placeholder — implemented in Feature 3
-      throw new Error("Not implemented");
+      const maxAgeDays = options?.maxAgeDays ?? 90;
+      const minAccessCount = options?.minAccessCount ?? 2;
+      const now = Date.now();
+
+      const allEntries = await project.searchIndex.getAllKnowledgeEntries();
+      const candidates: ArchiveCandidate[] = [];
+
+      for (const entry of allEntries) {
+        // Calculate days since last access
+        const lastAccessTime = entry.lastAccessed
+          ? new Date(entry.lastAccessed).getTime()
+          : new Date(entry.createdAt).getTime();
+        const daysSinceAccess = (now - lastAccessTime) / (1000 * 60 * 60 * 24);
+
+        // Skip recently accessed entries
+        if (daysSinceAccess < maxAgeDays && entry.accessCount >= minAccessCount) {
+          continue;
+        }
+
+        // Determine importance from entry type heuristic
+        const importance: "high" | "medium" | "low" =
+          entry.type === "decision" || entry.type === "pattern"
+            ? "high"
+            : entry.type === "incident" || entry.type === "workflow"
+              ? "medium"
+              : "low";
+
+        // Importance-weighted threshold: high-importance entries need more staleness
+        const effectiveMaxAge =
+          importance === "high"
+            ? maxAgeDays * 2
+            : importance === "medium"
+              ? maxAgeDays * 1.5
+              : maxAgeDays;
+
+        if (
+          daysSinceAccess < effectiveMaxAge &&
+          entry.accessCount >= minAccessCount
+        ) {
+          continue;
+        }
+
+        // Connection-awareness: check active connections (PRD 10.2)
+        const activeConnections =
+          await project.searchIndex.getActiveConnectionCount(entry.id);
+
+        if (activeConnections > 0) {
+          // Connected but stale — don't suggest archiving
+          candidates.push({
+            id: entry.id,
+            title: entry.title,
+            type: entry.type,
+            lastAccessed: entry.lastAccessed ?? null,
+            accessCount: entry.accessCount,
+            daysSinceAccess: Math.round(daysSinceAccess),
+            importance,
+            activeConnections,
+            status: "connected_but_stale",
+            reason: `${activeConnections} active connection(s) — review rather than archive`,
+          });
+        } else {
+          // No connections, stale — archive candidate
+          candidates.push({
+            id: entry.id,
+            title: entry.title,
+            type: entry.type,
+            lastAccessed: entry.lastAccessed ?? null,
+            accessCount: entry.accessCount,
+            daysSinceAccess: Math.round(daysSinceAccess),
+            importance,
+            activeConnections: 0,
+            status: "archive_candidate",
+            reason: `Not accessed for ${Math.round(daysSinceAccess)} days, ${entry.accessCount} total accesses`,
+          });
+        }
+      }
+
+      // Sort: archive candidates first, then by staleness
+      candidates.sort((a, b) => {
+        if (a.status !== b.status) {
+          return a.status === "archive_candidate" ? -1 : 1;
+        }
+        return b.daysSinceAccess - a.daysSinceAccess;
+      });
+
+      return {
+        candidates,
+        totalEvaluated: allEntries.length,
+        totalCandidates: candidates.length,
+      };
     },
 
     async start(): Promise<void> {
