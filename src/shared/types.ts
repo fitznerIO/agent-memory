@@ -53,6 +53,10 @@ export interface HybridSearchOptions {
   weightVector: number;
   weightRecency: number;
   rrfK: number;
+  /** Tags from the current context — results matching these tags get a boost */
+  boostTags?: string[];
+  /** Entry ID the user is currently looking at — connected entries get a boost */
+  contextEntryId?: string;
 }
 
 export interface SessionState {

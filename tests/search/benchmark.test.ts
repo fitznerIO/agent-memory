@@ -259,6 +259,8 @@ interface BenchmarkQuery {
   expectedIds: string[];
   description: string;
   category: QueryCategory;
+  /** Optional tags representing the user's current context — triggers tag-overlap boost */
+  boostTags?: string[];
 }
 
 const QUERIES: BenchmarkQuery[] = [
@@ -294,6 +296,7 @@ const QUERIES: BenchmarkQuery[] = [
     expectedIds: ["dec-001", "ses-002"],
     description: "German plural: Stundensätze vs Stundensatz in corpus",
     category: "german_morphology",
+    boostTags: ["business/pricing", "consulting"],
   },
   {
     query: "Patientendaten verschlüsseln",
@@ -301,6 +304,7 @@ const QUERIES: BenchmarkQuery[] = [
     description:
       "German verb form: verschlüsseln vs verschlüsselt in corpus",
     category: "german_morphology",
+    boostTags: ["compliance/dsgvo", "healthcare"],
   },
   {
     query: "Entscheidungen",
@@ -315,6 +319,7 @@ const QUERIES: BenchmarkQuery[] = [
     description:
       "German adjective forms: regulatorisch vs regulatorische/regulatorischen",
     category: "german_morphology",
+    boostTags: ["healthcare"],
   },
 
   // --- Compound words ---
@@ -379,6 +384,7 @@ const QUERIES: BenchmarkQuery[] = [
     description:
       "Semantic: data protection question without exact DSGVO keyword",
     category: "semantic_similarity",
+    boostTags: ["compliance/dsgvo", "healthcare"],
   },
   {
     query: "Fehler in verteilten Systemen behandeln",
@@ -386,6 +392,7 @@ const QUERIES: BenchmarkQuery[] = [
     description:
       "Semantic: error handling (synonym for retry/circuit breaker)",
     category: "semantic_similarity",
+    boostTags: ["tech/patterns", "architecture"],
   },
   {
     query: "Wie integrieren wir neue Teammitglieder?",
@@ -399,6 +406,7 @@ const QUERIES: BenchmarkQuery[] = [
     description:
       "Semantic: ML in healthcare without mentioning specific model names",
     category: "semantic_similarity",
+    boostTags: ["tech/ai", "healthcare"],
   },
 
   // --- Special characters / hyphenated terms ---
@@ -419,6 +427,7 @@ const QUERIES: BenchmarkQuery[] = [
     expectedIds: ["ses-003"],
     description: "Special chars: WCAG version number + accessibility",
     category: "special_chars",
+    boostTags: ["healthcare/ux", "session"],
   },
   {
     query: "Blue-Green Deployment",
@@ -618,7 +627,7 @@ describe("Search Benchmark", () => {
     });
     await system.start();
 
-    // Index corpus with real embeddings
+    // Index corpus with real embeddings + tags
     const now = Date.now();
     for (const doc of CORPUS) {
       const embedding = await system.embedding.embed(doc.content);
@@ -638,6 +647,22 @@ describe("Search Benchmark", () => {
         filePath: join(tempDir, `${doc.id}.md`),
         embedding: embedding.vector,
       } as any);
+
+      // Index in v2-lite knowledge table + tags for tag-overlap boost
+      const isoNow = new Date(now).toISOString();
+      await system.searchIndex.indexKnowledge({
+        id: doc.id,
+        title: doc.title,
+        type: doc.type as any,
+        filePath: join(tempDir, `${doc.id}.md`),
+        createdAt: isoNow,
+        updatedAt: isoNow,
+        accessCount: 0,
+        tags: doc.tags,
+      });
+      if (doc.tags.length > 0) {
+        await system.searchIndex.insertTags(doc.id, doc.tags);
+      }
     }
 
     // Run all queries
@@ -650,7 +675,11 @@ describe("Search Benchmark", () => {
         results = await system.searchIndex.searchHybrid(
           q.query,
           queryEmbed.vector,
-          { limit: 10, minScore: 0 },
+          {
+            limit: 10,
+            minScore: 0,
+            boostTags: q.boostTags,
+          },
         );
       } catch {
         // FTS5 can throw on special characters (/, ., etc.)

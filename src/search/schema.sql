@@ -11,29 +11,16 @@ CREATE TABLE IF NOT EXISTS memories (
   last_accessed_at INTEGER NOT NULL
 );
 
--- FTS5 full-text search index
+-- FTS5 full-text search index (standalone, not synced via triggers).
+-- Stores preprocessed+stemmed content independently from the memories table
+-- so that original content is preserved for retrieval while FTS indexes
+-- expanded/stemmed tokens for better German+English morphology matching.
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
   content,
-  content='memories',
-  content_rowid='rowid',
-  tokenize='porter unicode61'
+  tokenize='unicode61'
 );
 
--- Triggers to keep FTS in sync
-CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-  INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-  INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-  INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
-  INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
-END;
-
--- sqlite-vec vector index (384 dimensions for all-MiniLM-L6-v2)
+-- sqlite-vec vector index (384 dimensions for paraphrase-multilingual-MiniLM-L12-v2)
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(
   memory_rowid INTEGER PRIMARY KEY,
   embedding float[384]
