@@ -33,7 +33,7 @@ CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
   INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
 
--- sqlite-vec vector index (384 dimensions for all-MiniLM-L6-v2)
+-- sqlite-vec vector index (384 dimensions for paraphrase-multilingual-MiniLM-L12-v2)
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(
   memory_rowid INTEGER PRIMARY KEY,
   embedding float[384]

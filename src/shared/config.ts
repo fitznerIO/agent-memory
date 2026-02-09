@@ -45,8 +45,8 @@ export function createDefaultConfig(): MemoryConfig {
     hybridDefaults: {
       limit: 5,
       minScore: 0.1,
-      weightFts: 0.4,
-      weightVector: 0.55,
+      weightFts: 0.30,
+      weightVector: 0.65,
       weightRecency: 0.05,
       rrfK: 60,
     },

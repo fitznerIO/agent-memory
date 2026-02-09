@@ -49,6 +49,58 @@ interface VecResultRow {
   distance: number;
 }
 
+/**
+ * Preprocess text for FTS5 indexing: expand hyphenated terms.
+ * "KI-Services" → "KI-Services KI Services"
+ * "DSGVO-konform" → "DSGVO-konform DSGVO konform"
+ */
+function expandHyphens(text: string): string {
+  return text.replace(/\b(\w+)-(\w+)\b/g, (match, a, b) => {
+    return `${match} ${a} ${b}`;
+  });
+}
+
+/**
+ * Type-based weight multiplier for hybrid scoring.
+ * Higher-value knowledge types (decisions, patterns) get a boost,
+ * lower-value types (sessions, notes) get a slight penalty.
+ */
+const TYPE_WEIGHT: Record<string, number> = {
+  decision: 1.15,
+  pattern: 1.10,
+  incident: 1.05,
+  workflow: 1.0,
+  entity: 1.0,
+  note: 0.95,
+  session: 0.90,
+};
+
+/**
+ * Sanitize a query string for FTS5 MATCH syntax.
+ * Removes characters that would cause FTS5 parse errors (/, ., etc.)
+ * and splits hyphenated terms into separate tokens.
+ */
+function sanitizeFtsQuery(query: string): string {
+  // Expand hyphenated terms: "KI-Services" → KI OR Services OR "KI-Services"
+  let sanitized = query;
+
+  // Split hyphenated words into separate tokens + keep original
+  sanitized = sanitized.replace(/\b(\w+)-(\w+)\b/g, (_match, a, b) => {
+    return `${a} ${b}`;
+  });
+
+  // Remove FTS5 special operators and characters that cause parse errors
+  sanitized = sanitized.replace(/[/.:!?@#$%^&*()=+\[\]{}<>|\\~`"']/g, " ");
+
+  // Collapse multiple spaces
+  sanitized = sanitized.replace(/\s+/g, " ").trim();
+
+  // Reject empty or too-short queries
+  if (sanitized.length < 2) return "";
+
+  return sanitized;
+}
+
 function rowToMemory(row: MemoryRow): Memory {
   return {
     metadata: {
@@ -227,10 +279,11 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       }
 
       // INSERT OR REPLACE into memories
+      // Expand hyphenated terms so FTS5 indexes both forms
       insertMemory.run(
         memory.metadata.id,
         memory.filePath,
-        memory.content,
+        expandHyphens(memory.content),
         memory.metadata.type,
         memory.metadata.importance,
         memory.metadata.createdAt,
@@ -360,7 +413,10 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
 
     async searchText(query: string, limit?: number): Promise<SearchResult[]> {
       const effectiveLimit = limit ?? config.hybridDefaults.limit;
-      const rows = searchFts.all(query, effectiveLimit);
+      const sanitized = sanitizeFtsQuery(query);
+      if (!sanitized) return [];
+
+      const rows = searchFts.all(sanitized, effectiveLimit);
       return rows.map((row) => ({
         memory: rowToMemory(row),
         score: -row.bm25_score, // Negate: bm25() returns negative, more negative = better
@@ -461,11 +517,35 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
         const recencyFactor = 1 / (1 + daysSinceUpdate / 365);
         score += opts.weightRecency * recencyFactor;
 
+        // Type-based weight: boost high-value types, penalize low-value
+        const typeWeight = TYPE_WEIGHT[memory.metadata.type] ?? 1.0;
+        score *= typeWeight;
+
         scored.push({ id, score, memory });
       }
 
       // Sort by score descending
       scored.sort((a, b) => b.score - a.score);
+
+      // Min-Max normalization: remap RRF scores to 0–1 range
+      // so that minScore filtering becomes meaningful
+      if (scored.length >= 2) {
+        const rawMax = scored[0]!.score;
+        const rawMin = scored[scored.length - 1]!.score;
+        const range = rawMax - rawMin;
+        if (range > 0) {
+          for (const s of scored) {
+            s.score = (s.score - rawMin) / range;
+          }
+        } else {
+          // All scores identical — set to 1.0
+          for (const s of scored) {
+            s.score = 1.0;
+          }
+        }
+      } else if (scored.length === 1) {
+        scored[0]!.score = 1.0;
+      }
 
       // Filter by minScore and limit
       return scored

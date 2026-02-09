@@ -383,7 +383,7 @@ describe("SearchIndex", () => {
       for (const r of results) {
         expect(r.matchType).toBe("hybrid");
         expect(r.source).toBe("hybrid-rrf");
-        expect(r.score).toBeGreaterThan(0);
+        expect(r.score).toBeGreaterThanOrEqual(0);
       }
     });
 
