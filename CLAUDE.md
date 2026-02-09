@@ -34,6 +34,7 @@ bun test tests/git/       # Run git module tests
 bun test tests/embedding/ # Run embedding module tests
 bun test tests/consolidation/ # Run consolidation module tests
 bun test tests/integration/   # Run integration tests
+bun run test:benchmark    # Search quality benchmark (P@3, MRR, score analysis)
 bun run typecheck         # TypeScript strict check
 bun run lint              # Biome linter
 bun run lint:fix          # Auto-fix lint issues

@@ -44,6 +44,7 @@
     "test:git": "bun test tests/git/",
     "test:embedding": "bun test tests/embedding/",
     "test:integration": "bun test tests/integration/",
+    "test:benchmark": "bun test tests/search/benchmark.test.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src/",
     "lint:fix": "biome check --fix src/"
