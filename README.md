@@ -1,8 +1,21 @@
 # Agent Memory
 
-Persistent memory for AI agents. Markdown files are the source of truth, SQLite provides fast hybrid search, Git handles versioning.
+Give your AI agent a memory that persists across sessions.
 
-```
+Agent Memory stores knowledge as **Markdown files** you can read, edit, and version — just like [Obsidian](https://obsidian.md), but built for agents. It finds relevant memories through **hybrid search** that combines full-text search (FTS5) with vector similarity (local embeddings, no API calls) and connects them in a **knowledge graph** with bidirectional links.
+
+Everything runs locally. No cloud, no API keys, no external services.
+
+### Key Features
+
+- **Markdown-first** — Human-readable files with YAML frontmatter. Your data, your format.
+- **Hybrid search** — BM25 keyword matching + cosine vector similarity, merged via Reciprocal Rank Fusion.
+- **Local embeddings** — Runs a MiniLM model on your machine via ONNX. Zero network calls.
+- **Knowledge graph** — Bidirectional connections between entries with automatic discovery.
+- **Git versioning** — Every change committed with semantic messages via pure-JS git.
+- **Per-project + global** — Project-scoped memories with a shared global knowledge base.
+
+```bash
 bun install && bun test
 ```
 
