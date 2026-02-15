@@ -589,10 +589,17 @@ Database.setCustomSQLite("/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib");
 
 Install it with `brew install sqlite` if not already present.
 
+## Inspiration
+
+This project was inspired by:
+
+- **[OpenClaw](https://github.com/openclaw/openclaw)** — Personal AI assistant with multi-channel architecture and local-first design
+- **[Obsidian](https://obsidian.md)** — Knowledge base built on local Markdown files with bidirectional linking
+
 ## Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and guidelines.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — Built by [fitznerIO GmbH](https://fitzner.io/)
