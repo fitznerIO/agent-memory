@@ -37,9 +37,9 @@ bun install && bun test
           │ forget        │               └────────────┘
           │ commit        │
           │───────────────│
-          │ memoryStore   │  v2-lite
-          │ memoryConnect │  knowledge
-          │ memoryTraverse│  graph
+          │ memoryStore   │  knowledge
+          │ memoryConnect │  graph
+          │ memoryTraverse│
           └───────┬───────┘
                   │
       ┌───────────┼───────────┬───────────┐
@@ -84,7 +84,7 @@ src/
     ├── types.ts          Shared domain types (Memory, SearchResult, ...)
     ├── config.ts         MemoryConfig + defaults
     ├── errors.ts         Custom error classes
-    └── utils.ts          v2-lite helpers (slugify, parseV2LiteId, knowledgeTypeDir, ...)
+    └── utils.ts          Helpers (slugify, parseId, knowledgeTypeDir, ...)
 ```
 
 ## Modules
@@ -118,9 +118,9 @@ source: agent-session
 TypeScript generics allow you to write reusable, type-safe functions.
 ```
 
-### v2-lite: Knowledge Graph
+### Knowledge Graph
 
-v2-lite adds structured knowledge types, bidirectional connections, sequential IDs, and namespace tags on top of the base memory store.
+Entries are organized into structured knowledge types with sequential IDs, bidirectional connections, and hierarchical namespace tags.
 
 #### Knowledge Types
 
@@ -150,7 +150,7 @@ v2-lite adds structured knowledge types, bidirectional connections, sequential I
     └── workflows/       wf-001-deploy-pipeline.md
 ```
 
-#### v2-lite Frontmatter
+#### Frontmatter
 
 ```markdown
 ---
@@ -170,7 +170,7 @@ connections:
 We switched from polling to webhooks because...
 ```
 
-Key differences from v1: sequential IDs (`dec-001`), string dates (`YYYY-MM-DD`), hierarchical namespace tags (`tech/api`), and inline connections.
+Sequential IDs (`dec-001`), string dates (`YYYY-MM-DD`), hierarchical namespace tags (`tech/api`), and inline connections.
 
 #### Connections
 
@@ -264,7 +264,7 @@ bun run cli -- note --content "User prefers TypeScript" --type semantic --import
 # Search memories
 bun run cli -- search --query "TypeScript preferences" --limit 5
 
-# Search with v2-lite filters
+# Search with tags and graph filters
 bun run cli -- search --query "API integration" --tags "tech/api" --connected-to dec-001
 
 # Read a specific memory
@@ -279,17 +279,17 @@ bun run cli -- forget --query "outdated info" --scope entry --confirm
 # Commit changes to git
 bun run cli -- commit --message "Session notes" --type consolidate
 
-# v2-lite: Store a knowledge entry
+# Store a knowledge entry
 bun run cli -- store --title "Webhook statt Polling" --type decision \
   --content "We switched to webhooks because..." --tags "tech/api,patterns/integration"
 
-# v2-lite: Connect two entries
+# Connect two entries
 bun run cli -- connect --source dec-001 --target inc-001 --type related --note "Related incident"
 
-# v2-lite: Traverse the knowledge graph
+# Traverse the knowledge graph
 bun run cli -- traverse --start dec-001 --direction both --depth 2
 
-# v2-lite: Run a migration step
+# Run a migration step
 bun run cli -- migrate --step split-files
 bun run cli -- migrate --step namespace-tags
 bun run cli -- migrate --step discover-connections
@@ -346,7 +346,7 @@ my-project/
     ├── .index/search.sqlite  Search index
     ├── core/
     ├── semantic/
-    │   ├── decisions/        v2-lite knowledge files
+    │   ├── decisions/        Knowledge files
     │   ├── entities/
     │   └── notes/
     ├── episodic/
@@ -391,20 +391,20 @@ const memory = createMemorySystem({
 
 await memory.start();
 
-// v1: Save a session note
+// Save a session note
 await memory.note({
   content: "User prefers TypeScript over JavaScript",
   type: "semantic",
   importance: "medium",
 });
 
-// v1: Hybrid search
+// Hybrid search
 const results = await memory.search({
   query: "TypeScript preferences",
   limit: 5,
 });
 
-// v2-lite: Store a knowledge entry
+// Store a knowledge entry
 const entry = await memory.memoryStore({
   title: "Webhook statt Polling",
   type: "decision",
@@ -415,7 +415,7 @@ const entry = await memory.memoryStore({
 // → { id: "dec-001", file_path: "semantic/decisions/dec-001-webhook-statt-polling.md",
 //     suggested_connections: [...], existing_tags: [...] }
 
-// v2-lite: Connect two entries
+// Connect two entries
 await memory.memoryConnect({
   source_id: "dec-001",
   target_id: "pat-002",
@@ -423,7 +423,7 @@ await memory.memoryConnect({
 });
 // → { success: true, inverse_type: "extended_by" }
 
-// v2-lite: Traverse the knowledge graph
+// Traverse the knowledge graph
 const graph = await memory.memoryTraverse({
   start_id: "dec-001",
   direction: "both",
@@ -432,7 +432,7 @@ const graph = await memory.memoryTraverse({
 // → { results: [{ id: "inc-001", title: "API Timeout", type: "incident",
 //                  connection_type: "related", distance: 1 }, ...] }
 
-// v2-lite: Search with tags and graph filters
+// Search with tags and graph filters
 const filtered = await memory.search({
   query: "API integration",
   tags: ["tech/api"],
@@ -455,7 +455,7 @@ await memory.stop();
 | `update` | `{ path, content, reason }` | Update content + auto-reindex |
 | `forget` | `{ query, scope, confirm }` | Delete matching memories |
 | `commit` | `{ message, type }` | Git commit with semantic type |
-| `memoryStore` | `{ title, type, content, tags?, connections? }` | Store a v2-lite knowledge entry |
+| `memoryStore` | `{ title, type, content, tags?, connections? }` | Store a knowledge entry |
 | `memoryConnect` | `{ source_id, target_id, type, note? }` | Create bidirectional connection |
 | `memoryTraverse` | `{ start_id, direction, types?, depth? }` | BFS traversal of the knowledge graph |
 
@@ -485,7 +485,7 @@ import type {
   MemoryForgetOutput,
   MemoryCommitInput,
   MemoryCommitOutput,
-  // v2-lite types
+  // Knowledge graph types
   KnowledgeType,      // "decision" | "incident" | "entity" | "pattern" | "workflow" | "note" | "session"
   ConnectionType,     // "related" | "builds_on" | "contradicts" | "part_of" | "supersedes"
   Connection,         // { target, type, note? }
@@ -517,9 +517,9 @@ import type {
   │ Embedding Engine  │────────▶│ Search Index      │
   │ (MiniLM-L6)      │  384d   │ (SQLite)          │
   └───────────────────┘ vector  │  ├ memories table │
-                                │  ├ knowledge table│  v2-lite
-                                │  ├ connections    │  v2-lite
-                                │  ├ entry_tags     │  v2-lite
+                                │  ├ knowledge table│
+                                │  ├ connections    │
+                                │  ├ entry_tags     │
                                 │  ├ FTS5 (text)    │
                                 │  └ vec0 (vectors) │
                                 └─────────┬─────────┘
