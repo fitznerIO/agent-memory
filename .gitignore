@@ -13,3 +13,6 @@ dist/
 
 # Agent memory store
 .agent-memory/
+
+# Claude Code local settings
+.claude/settings.local.json

@@ -6,7 +6,6 @@
 |---|---|
 | **Version** | 2.0-lite |
 | **Datum** | 08. Februar 2026 |
-| **Autor** | fitznerIO – AI Services |
 | **Status** | Draft |
 | **Basis** | agent-memory v1 PRD + v2 Full PRD |
 | **Prinzip** | Der Agent pflegt alles. Der User merkt nichts davon. |
@@ -795,5 +794,3 @@ Jedes Feature kann unabhängig nachgerüstet werden, ohne das Basissystem anzufa
 | Pflege-Aufwand für User | Niedrig | **Null** |
 
 ---
-
-*Agent Knowledge Memory v2.0-lite – fitznerIO AI Services – Februar 2026*

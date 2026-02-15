@@ -588,3 +588,11 @@ Database.setCustomSQLite("/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib");
 ```
 
 Install it with `brew install sqlite` if not already present.
+
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and guidelines.
+
+## License
+
+[MIT](LICENSE)
