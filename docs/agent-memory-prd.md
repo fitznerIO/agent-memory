@@ -1,9 +1,8 @@
 # PRD: Agent Memory System
 
-**Version:** 1.0  
-**Datum:** 2026-02-05  
-**Autor:** Sascha + Claude  
-**Status:** Draft  
+**Version:** 1.0
+**Datum:** 2026-02-05
+**Status:** Draft
 
 ---
 
