@@ -13,13 +13,13 @@ Plugin-Infrastruktur für agent-memory: Extensions bekommen eine eigene SQLite-T
 
 | # | Task | Depends on | Status |
 |---|------|-----------|--------|
-| 001 | Phase 0: C1 — Runtime-KnowledgeType-Registry | None | Pending |
-| 002 | Phase 0: C3 ext.*-Frontmatter-API + C4 extensionDb-Accessor & Wiring + C6 Invariante | 001 | Pending |
-| 003 | Phase 1: Extension-Interface (types.ts) + Registry-Tabelle | 002 | Pending |
-| 004 | Phase 1: Manager (install/uninstall) + Frontmatter-Cleanup | 003 | Pending |
-| 005 | Phase 1: Loader (Startup-Discovery) + ExtensionContext + MemoryAPI-Facade | 003, 004 | Pending |
-| 006 | Phase 2: CLI-Commands + Tool-Dispatch (Variante A) | 005 | Pending |
-| 007 | Phase 3: Validierung — Referenz-Extension + Tests | 006 | Pending |
+| 001 | Phase 0: C1 — Runtime-KnowledgeType-Registry | None | Done |
+| 002 | Phase 0: C3 ext.*-Frontmatter-API + C4 extensionDb-Accessor & Wiring + C6 Invariante | 001 | Done |
+| 003 | Phase 1: Extension-Interface (types.ts) + Registry-Tabelle | 002 | Done |
+| 004 | Phase 1: Manager (install/uninstall) + Frontmatter-Cleanup | 003 | Done |
+| 005 | Phase 1: Loader (Startup-Discovery) + ExtensionContext + MemoryAPI-Facade | 003, 004 | Done |
+| 006 | Phase 2: CLI-Commands + Tool-Dispatch (Variante A) | 005 | Done |
+| 007 | Phase 3: Validierung — Referenz-Extension + Tests | 006 | Done |
 
 ## Abhängigkeitsbeschreibung
 
