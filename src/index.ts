@@ -6,6 +6,7 @@ import { createConsolidationAgent } from "./consolidation/agent.ts";
 import type { ExistingEntry } from "./consolidation/types.ts";
 import { createEmbeddingEngine } from "./embedding/engine.ts";
 import type { EmbeddingEngine } from "./embedding/types.ts";
+import { loadExtensions } from "./extensions/loader.ts";
 import { createGitManager } from "./git/manager.ts";
 import type { GitManager } from "./git/types.ts";
 import { parseMarkdown, serializeMarkdown } from "./memory/parser.ts";
@@ -115,6 +116,16 @@ export interface MemorySystem {
     maxAgeDays?: number;
     minAccessCount?: number;
   }): Promise<DecayOutput>;
+
+  // Extension System (C3): read/write an `ext.<name>` frontmatter block on an
+  // entry. Writes to the project store only (C6); does NOT re-index — ext.* is
+  // not in the FTS/vector index, its structured copy lives in the <ext>_meta table.
+  setExtensionData(
+    id: string,
+    name: string,
+    data: Record<string, unknown>,
+  ): Promise<void>;
+  getExtensionData<T = unknown>(id: string, name: string): Promise<T | null>;
 
   // Lifecycle
   start(): Promise<void>;
@@ -1255,6 +1266,36 @@ export function createMemorySystem(
       };
     },
 
+    async setExtensionData(
+      id: string,
+      name: string,
+      data: Record<string, unknown>,
+    ): Promise<void> {
+      // C3: write the ext.<name> frontmatter block on the project-store entry.
+      // 1. resolve id → file (project store only, C6)
+      const memory = await project.store.read(id);
+      const absPath = join(config.baseDir, memory.filePath);
+      // 2. parse, 3. set flat literal key (yaml preserves "ext.<name>")
+      const raw = readFileSync(absPath, "utf-8");
+      const doc = parseMarkdown(raw);
+      doc.frontmatter[`ext.${name}`] = data;
+      // 4. serialize + write. No core re-index: ext.* is not FTS/vector indexed;
+      //    its structured copy lives in <ext>_meta.
+      writeFileSync(absPath, serializeMarkdown(doc));
+    },
+
+    async getExtensionData<T = unknown>(
+      id: string,
+      name: string,
+    ): Promise<T | null> {
+      const memory = await project.store.read(id);
+      const absPath = join(config.baseDir, memory.filePath);
+      const raw = readFileSync(absPath, "utf-8");
+      const doc = parseMarkdown(raw);
+      const value = doc.frontmatter[`ext.${name}`];
+      return value === undefined ? null : (value as T);
+    },
+
     async start(): Promise<void> {
       session = {
         sessionId: randomUUID(),
@@ -1286,6 +1327,11 @@ export function createMemorySystem(
 
       // Load core memories
       await project.store.loadCore();
+
+      // Extension System (C4/C6): load installed extensions on the PROJECT store's
+      // connection. No-op stub until Task 005. Runs after the store is ready and
+      // before any tool dispatch, so extension knowledgeTypes register in time.
+      await loadExtensions(project.searchIndex.extensionDb(), config.baseDir);
     },
 
     async stop(): Promise<void> {

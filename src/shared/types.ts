@@ -38,6 +38,23 @@ export interface MemoryNote {
 
 export type StoreSource = "project" | "global";
 
+/**
+ * Narrow, scoped DB accessor handed to extensions (Extension System C4).
+ * Wraps the project store's single bun:sqlite connection — so `foreign_keys = ON`
+ * and the WAL/setCustomSQLite setup are shared, and ON DELETE CASCADE fires.
+ * Synchronous, mirroring bun:sqlite's prepared-statement surface.
+ * NOT a raw `Database`: extensions get exactly run/get/all, nothing else.
+ *
+ * Statements are cached by SQL text. ALWAYS pass values via the `params` array
+ * (`?` placeholders) — never string-interpolate literals into the SQL, or the
+ * statement cache grows unbounded with one entry per distinct value.
+ */
+export interface ExtensionDB {
+  run(sql: string, params?: unknown[]): void;
+  get<T>(sql: string, params?: unknown[]): T | undefined;
+  all<T>(sql: string, params?: unknown[]): T[];
+}
+
 export interface SearchResult {
   memory: Memory;
   score: number;

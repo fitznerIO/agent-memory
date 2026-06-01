@@ -8,6 +8,7 @@ import { getIdPrefix } from "../shared/knowledge-types.ts";
 import type {
   Connection,
   ConnectionType,
+  ExtensionDB,
   HybridSearchOptions,
   InverseConnectionType,
   KnowledgeEntry,
@@ -1009,6 +1010,24 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
         });
       }
       return entries;
+    },
+
+    extensionDb(): ExtensionDB {
+      // Scoped wrapper over this store's connection (C4). Reuses the SAME `db`
+      // where foreign_keys=ON / WAL / setCustomSQLite already hold, so extension
+      // tables' ON DELETE CASCADE fires on memory_forget. One-off prepared
+      // statements via db.query; params spread positionally.
+      return {
+        run(sql: string, params: unknown[] = []): void {
+          db.query(sql).run(...(params as never[]));
+        },
+        get<T>(sql: string, params: unknown[] = []): T | undefined {
+          return (db.query(sql).get(...(params as never[])) as T) ?? undefined;
+        },
+        all<T>(sql: string, params: unknown[] = []): T[] {
+          return db.query(sql).all(...(params as never[])) as T[];
+        },
+      };
     },
   };
 }

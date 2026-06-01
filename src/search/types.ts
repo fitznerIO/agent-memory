@@ -1,5 +1,6 @@
 import type {
   ConnectionType,
+  ExtensionDB,
   HybridSearchOptions,
   InverseConnectionType,
   KnowledgeEntry,
@@ -80,4 +81,9 @@ export interface SearchIndex {
 
   // Get all knowledge entries (for rebuild/decay)
   getAllKnowledgeEntries(): Promise<KnowledgeEntry[]>;
+
+  // Extension System (C4): scoped DB accessor wrapping this store's connection.
+  // Lets the extension runtime create/query its own tables (and read core tables)
+  // on the SAME connection where foreign_keys=ON holds, so CASCADE works.
+  extensionDb(): ExtensionDB;
 }
