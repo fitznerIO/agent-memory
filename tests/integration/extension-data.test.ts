@@ -114,4 +114,12 @@ describe("Extension data API (C3) + extensionDb accessor (C4)", () => {
     const row = db.get<{ foreign_keys: number }>("PRAGMA foreign_keys");
     expect(row?.foreign_keys).toBe(1);
   });
+
+  test("extensions registry table is ensured at startup (Task 003, §5.1)", () => {
+    const db = system.searchIndex.extensionDb();
+    const row = db.get<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='extensions'",
+    );
+    expect(row?.name).toBe("extensions");
+  });
 });

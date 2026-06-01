@@ -1,4 +1,5 @@
 import type { ExtensionDB } from "../shared/types.ts";
+import { EXTENSIONS_TABLE_SQL } from "./types.ts";
 
 /**
  * Startup discovery + loading of installed extensions (Extension System §6.1).
@@ -17,9 +18,13 @@ import type { ExtensionDB } from "../shared/types.ts";
  * by Task 005, not this stub.
  */
 export async function loadExtensions(
-  _db: ExtensionDB,
+  db: ExtensionDB,
   _memoryPath: string,
 ): Promise<unknown[]> {
-  // No-op until Task 005. No extensions are auto-loaded.
+  // Ensure the registry table exists (§5.1). Idempotent.
+  db.run(EXTENSIONS_TABLE_SQL);
+
+  // No installed extensions are loaded yet — the real discovery/onStartup logic
+  // lands in Task 005. Returns the (currently empty) set of loaded extensions.
   return [];
 }
