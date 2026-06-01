@@ -268,7 +268,8 @@ export interface Connection {
 export interface KnowledgeEntry {
   id: string;
   title: string;
-  type: KnowledgeType;
+  // Built-in type OR an extension-registered type string (C1).
+  type: KnowledgeType | (string & {});
   filePath: string;
   createdAt: string;
   updatedAt: string;
@@ -282,7 +283,10 @@ export interface KnowledgeEntry {
 
 export interface MemoryStoreInput {
   title: string;
-  type: KnowledgeType;
+  // Core knowledge types OR an extension-registered type (C1). The runtime
+  // registry resolves dir/v1Type/idPrefix; `(string & {})` keeps autocomplete
+  // for the built-in union while allowing extension type names.
+  type: KnowledgeType | (string & {});
   content: string;
   tags?: string[];
   connections?: Array<{

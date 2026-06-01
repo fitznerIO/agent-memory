@@ -41,7 +41,7 @@ export interface SearchIndex {
   indexKnowledge(entry: Omit<KnowledgeEntry, "connections">): Promise<void>;
   removeKnowledge(id: string): Promise<void>;
   getKnowledgeById(id: string): Promise<KnowledgeEntry | null>;
-  getNextSequentialId(type: KnowledgeType): Promise<string>;
+  getNextSequentialId(type: KnowledgeType | string): Promise<string>;
 
   // v2-lite: Tag operations
   insertTags(entryId: string, tags: string[]): Promise<void>;
