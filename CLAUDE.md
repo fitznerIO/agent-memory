@@ -5,7 +5,7 @@ SQLite provides derived search indexes, Git handles versioning with semantic com
 
 ## Architecture
 
-Five modules + orchestrator. Each module has types in `types.ts` and implementation in a separate file.
+Six modules + orchestrator. Each module has types in `types.ts` and implementation in a separate file.
 
 | Module | Path | Responsibility |
 |--------|------|----------------|
@@ -14,6 +14,7 @@ Five modules + orchestrator. Each module has types in `types.ts` and implementat
 | Git Manager | `src/git/` | Versioning with isomorphic-git |
 | Embedding Engine | `src/embedding/` | Local embeddings via @huggingface/transformers |
 | Consolidation | `src/consolidation/` | Heuristic-based session note consolidation (no LLM) |
+| Extensions | `src/extensions/` | Plugin runtime: own SQLite table + `ext.<name>` frontmatter per extension |
 | Orchestrator | `src/index.ts` | Wires modules together via `createMemorySystem()` |
 
 ## Module Isolation
@@ -24,6 +25,17 @@ Modules may ONLY import from:
 
 Cross-module imports are forbidden. The orchestrator in `src/index.ts` is the sole integration point.
 
+## Extensions
+
+Plugins that add their own data + tools without touching the core schema. Authoring rules:
+
+- An extension is an `Extension` object (`src/extensions/types.ts`): `name`, `version`, `description`, `schema` (its `<name>_meta` table), `tools`, optional `knowledgeTypes`/`onInstall`/`onUninstall`/`onStartup`/`onMigrate`. Register it by adding ONE entry to `AVAILABLE_EXTENSIONS` in `src/extensions/registry.ts`.
+- **Own table only.** The runtime creates `<name>_meta` with `entry_id TEXT PRIMARY KEY` + `FOREIGN KEY (entry_id) REFERENCES knowledge(id) ON DELETE CASCADE`. Never `ALTER` core tables.
+- **Own frontmatter namespace.** Write extension data under `ext.<name>` via `ctx.memory.setExtensionData(id, name, data)` — never core fields directly.
+- **Custom knowledge types** go through `knowledgeTypes` (the C1 runtime registry in `src/shared/knowledge-types.ts`), not the closed `KnowledgeType` union. IDs are sequential `{idPrefix}-NNN`.
+- **Reach the core only via the `ctx.memory` facade** (`MemoryAPI`) and the scoped `ctx.db` (`ExtensionDB`, project store connection). Extensions bind to the **project store only** (no global store).
+- Reference implementation: `src/extensions/examples/bookmark.ts`. CLI tools dispatch as `agent-memory <tool_name> --flags` (Variante A — no Agent-SDK host).
+
 ## Commands
 
 ```bash
@@ -33,6 +45,7 @@ bun test tests/search/    # Run search module tests
 bun test tests/git/       # Run git module tests
 bun test tests/embedding/ # Run embedding module tests
 bun test tests/consolidation/ # Run consolidation module tests
+bun test tests/extensions/    # Run extension system tests
 bun test tests/integration/   # Run integration tests
 bun run test:benchmark    # Search quality benchmark (P@3, MRR, score analysis)
 bun run typecheck         # TypeScript strict check
@@ -48,6 +61,11 @@ agent-memory consolidate                      # Consolidate session notes into k
 agent-memory consolidate --dry-run            # Preview consolidation plan without executing
 agent-memory decay                            # Show archive candidates based on access patterns
 agent-memory decay --max-age 30 --min-access 3  # Custom staleness thresholds
+
+agent-memory extensions list                  # Available extensions + installed state
+agent-memory extensions install <name>        # Install (creates <name>_meta table, registers types)
+agent-memory extensions uninstall <name>      # Uninstall (drops table, cleans ext.<name> frontmatter)
+agent-memory extensions status <name>         # Version, installed_at, table, row count, tools
 ```
 
 ## Bun Gotchas

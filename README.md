@@ -56,7 +56,7 @@ bun install && bun test
 
 ## Architecture
 
-Four isolated modules plus an orchestrator and migrations. Modules never import from each other — the orchestrator in `src/index.ts` is the sole wiring point.
+Five isolated modules plus an orchestrator, an extension runtime, and migrations. Modules never import from each other — the orchestrator in `src/index.ts` is the sole wiring point.
 
 ```
 src/
@@ -64,10 +64,10 @@ src/
 ├── cli.ts                CLI entry point — agent-memory <command>
 ├── memory/
 │   ├── store.ts          File-based CRUD with YAML frontmatter
-│   ├── parser.ts         Markdown + YAML parsing/serialization
+│   ├── parser.ts         Re-exports the markdown parser (now in shared/)
 │   └── types.ts          MemoryStore interface
 ├── search/
-│   ├── index.ts          FTS5 + sqlite-vec hybrid search
+│   ├── index.ts          FTS5 + sqlite-vec hybrid search; extensionDb() accessor
 │   ├── schema.sql        SQLite table definitions (memories, knowledge, connections, tags)
 │   └── types.ts          SearchIndex interface
 ├── git/
@@ -76,12 +76,23 @@ src/
 ├── embedding/
 │   ├── engine.ts         Local embeddings via @huggingface/transformers
 │   └── types.ts          EmbeddingEngine interface
+├── extensions/
+│   ├── types.ts          Extension, ExtensionContext, MemoryAPI interfaces
+│   ├── registry.ts       AVAILABLE_EXTENSIONS (explicit, no folder scan)
+│   ├── manager.ts        install / uninstall lifecycle
+│   ├── loader.ts         Startup discovery, knowledge-type registration, onStartup
+│   ├── facade.ts         MemoryAPI facade over the orchestrator
+│   ├── frontmatter.ts    ext.<name> namespace cleanup
+│   ├── tool-registry.ts  CLI tool dispatch (Variante A)
+│   └── examples/bookmark.ts  Reference extension
 ├── migration/
 │   ├── split-files.ts    Split bulk .md into individual knowledge files
 │   ├── namespace-tags.ts Convert flat tags to hierarchical namespaces
 │   └── discover-connections.ts  Auto-discover related entries via search
 └── shared/
-    ├── types.ts          Shared domain types (Memory, SearchResult, ...)
+    ├── types.ts          Shared domain types (Memory, SearchResult, ExtensionDB, ...)
+    ├── markdown.ts       Markdown + YAML parsing/serialization
+    ├── knowledge-types.ts  Runtime registry of knowledge types (core + extension)
     ├── config.ts         MemoryConfig + defaults
     ├── errors.ts         Custom error classes
     └── utils.ts          Helpers (slugify, parseId, knowledgeTypeDir, ...)
@@ -253,6 +264,28 @@ Local-only embeddings, no API calls:
 
 Lazy-loaded on first use. Subsequent calls are instant.
 
+### Extensions
+
+A plugin layer that adds domain-specific data and tools **without changing the core schema**. Each extension gets its own SQLite table and its own `ext.<name>` frontmatter namespace; install and uninstall are clean (no leftover data).
+
+```
+Extension = own table (<name>_meta, FK → knowledge.id ON DELETE CASCADE)
+          + own frontmatter namespace (ext.<name>:)
+          + own knowledge types (e.g. "transaction", "idea")
+          + own tools (dispatched as `agent-memory <tool> --flags`)
+```
+
+Extensions reach the core only through a narrow `MemoryAPI` facade plus a scoped DB accessor — they never import core modules directly. They bind to the project store only. Adding one is a single entry in `src/extensions/registry.ts`; the reference implementation lives in `src/extensions/examples/bookmark.ts`.
+
+```bash
+agent-memory extensions list              # available + installed state
+agent-memory extensions install bookmark  # create table, register types, run onInstall
+agent-memory extensions status bookmark   # version, installed_at, table, row count, tools
+agent-memory extensions uninstall bookmark  # drop table + clean ext.bookmark frontmatter
+```
+
+Uninstall removes the extension's table, registry row, and `ext.<name>` frontmatter blocks — knowledge entries, connections, tags, and git history all remain (they belong to the core). Deleting a knowledge entry (`forget`) cascades to the extension's row automatically.
+
 ## CLI
 
 All commands output JSON. Errors go to stderr with exit code 1.
@@ -293,6 +326,15 @@ bun run cli -- traverse --start dec-001 --direction both --depth 2
 bun run cli -- migrate --step split-files
 bun run cli -- migrate --step namespace-tags
 bun run cli -- migrate --step discover-connections
+
+# Manage extensions
+bun run cli -- extensions list
+bun run cli -- extensions install bookmark
+bun run cli -- extensions status bookmark
+bun run cli -- extensions uninstall bookmark
+
+# Call an extension tool (dispatched by name)
+bun run cli -- bookmark_add --title "Anthropic" --url "https://anthropic.com" --priority 5
 ```
 
 Global flags:
