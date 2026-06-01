@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { buildExtensionDispatch } from "./extensions/tool-registry.ts";
 import { createMemorySystem } from "./index.ts";
 import type { MemorySystem } from "./index.ts";
 import { migrateDiscoverConnections } from "./migration/discover-connections.ts";
@@ -10,10 +11,12 @@ import { findProjectRoot } from "./shared/config.ts";
 
 function parseArgs(argv: string[]): {
   command: string;
+  positionals: string[];
   flags: Record<string, string>;
 } {
   const [command, ...rest] = argv;
   const flags: Record<string, string> = {};
+  const positionals: string[] = [];
 
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i] as string;
@@ -27,10 +30,13 @@ function parseArgs(argv: string[]): {
         // Boolean flag (e.g. --confirm, --global, --no-global)
         flags[key] = "true";
       }
+    } else {
+      // Bare positional (e.g. `extensions install billing`).
+      positionals.push(arg);
     }
   }
 
-  return { command: command ?? "", flags };
+  return { command: command ?? "", positionals, flags };
 }
 
 function requireFlag(flags: Record<string, string>, name: string): string {
@@ -75,7 +81,7 @@ async function initSystem(
 }
 
 async function main(): Promise<void> {
-  const { command, flags } = parseArgs(process.argv.slice(2));
+  const { command, positionals, flags } = parseArgs(process.argv.slice(2));
 
   if (!command || command === "help") {
     console.log(`agent-memory — Persistent memory for AI agents
@@ -94,6 +100,8 @@ Commands:
   consolidate    Run consolidation on session notes
   decay          Show archive candidates based on access patterns
   migrate        Run migrations (split-files)
+  extensions     Manage extensions: list | install <name> | uninstall <name> | status [name]
+                 (newly installed tools become callable on the next invocation)
 
 Global flags:
   --project-dir <path>  Project root (auto-detected from .git/package.json)
@@ -320,11 +328,64 @@ Examples:
         break;
       }
 
-      default:
+      case "extensions": {
+        const sub = positionals[0];
+        if (sub === "list") {
+          console.log(JSON.stringify(system.listExtensions(), null, 2));
+        } else if (sub === "install") {
+          const name = positionals[1];
+          if (!name) {
+            console.error("Usage: agent-memory extensions install <name>");
+            process.exit(1);
+          }
+          await system.installExtensionByName(name);
+          console.error(`Installed extension: ${name}`);
+        } else if (sub === "uninstall") {
+          const name = positionals[1];
+          if (!name) {
+            console.error("Usage: agent-memory extensions uninstall <name>");
+            process.exit(1);
+          }
+          await system.uninstallExtensionByName(name);
+          console.error(`Uninstalled extension: ${name}`);
+        } else if (sub === "status") {
+          const name = positionals[1];
+          if (!name) {
+            // No name → list all with installed state.
+            console.log(JSON.stringify(system.listExtensions(), null, 2));
+          } else {
+            const status = system.extensionStatus(name);
+            if (!status) {
+              console.error(`Unknown extension: ${name}`);
+              process.exit(1);
+            }
+            console.log(JSON.stringify(status, null, 2));
+          }
+        } else {
+          console.error(
+            "Usage: agent-memory extensions <list|install|uninstall|status> [name]",
+          );
+          process.exit(1);
+        }
+        break;
+      }
+
+      default: {
+        // Variante A: extension tools dispatch as CLI subcommands. The loaded
+        // extensions expose a tool map; if `command` matches a tool, run it with
+        // the parsed flags as input.
+        const dispatch = buildExtensionDispatch(system.getLoadedExtensions());
+        const handler = dispatch.get(command);
+        if (handler) {
+          const result = await handler(flags);
+          console.log(JSON.stringify(result, null, 2));
+          break;
+        }
         console.error(
           `Unknown command: ${command}. Run "agent-memory help" for usage.`,
         );
         process.exit(1);
+      }
     }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

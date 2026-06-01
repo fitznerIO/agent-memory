@@ -38,6 +38,23 @@ export interface MemoryNote {
 
 export type StoreSource = "project" | "global";
 
+/**
+ * Narrow, scoped DB accessor handed to extensions (Extension System C4).
+ * Wraps the project store's single bun:sqlite connection — so `foreign_keys = ON`
+ * and the WAL/setCustomSQLite setup are shared, and ON DELETE CASCADE fires.
+ * Synchronous, mirroring bun:sqlite's prepared-statement surface.
+ * NOT a raw `Database`: extensions get exactly run/get/all, nothing else.
+ *
+ * Statements are cached by SQL text. ALWAYS pass values via the `params` array
+ * (`?` placeholders) — never string-interpolate literals into the SQL, or the
+ * statement cache grows unbounded with one entry per distinct value.
+ */
+export interface ExtensionDB {
+  run(sql: string, params?: unknown[]): void;
+  get<T>(sql: string, params?: unknown[]): T | undefined;
+  all<T>(sql: string, params?: unknown[]): T[];
+}
+
 export interface SearchResult {
   memory: Memory;
   score: number;
@@ -251,7 +268,8 @@ export interface Connection {
 export interface KnowledgeEntry {
   id: string;
   title: string;
-  type: KnowledgeType;
+  // Built-in type OR an extension-registered type string (C1).
+  type: KnowledgeType | (string & {});
   filePath: string;
   createdAt: string;
   updatedAt: string;
@@ -265,7 +283,10 @@ export interface KnowledgeEntry {
 
 export interface MemoryStoreInput {
   title: string;
-  type: KnowledgeType;
+  // Core knowledge types OR an extension-registered type (C1). The runtime
+  // registry resolves dir/v1Type/idPrefix; `(string & {})` keeps autocomplete
+  // for the built-in union while allowing extension type names.
+  type: KnowledgeType | (string & {});
   content: string;
   tags?: string[];
   connections?: Array<{

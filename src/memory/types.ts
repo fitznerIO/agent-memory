@@ -13,10 +13,8 @@ export interface MemoryFilter {
   importance?: Importance;
 }
 
-export interface MarkdownDocument {
-  frontmatter: Record<string, unknown>;
-  body: string;
-}
+// MarkdownDocument now lives in src/shared/markdown.ts (single source of truth).
+export type { MarkdownDocument } from "../shared/markdown.ts";
 
 export interface MemoryStore {
   create(

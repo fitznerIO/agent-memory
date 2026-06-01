@@ -1,18 +1,28 @@
+import {
+  getIdPrefix,
+  getKnowledgeTypeDir,
+  getTypeForPrefix,
+  getV1MemoryType,
+} from "./knowledge-types.ts";
 import type {
   ConnectionType,
   InverseConnectionType,
   KnowledgeType,
 } from "./types.ts";
 
-/** ID prefix per KnowledgeType for sequential IDs like dec-001, inc-002. */
+/**
+ * ID prefix per built-in KnowledgeType (dec-001, inc-002, …).
+ * Backed by the runtime registry (C1); extension prefixes are resolved via
+ * `getIdPrefix()` in src/shared/knowledge-types.ts, not this object.
+ */
 export const TYPE_PREFIX: Record<KnowledgeType, string> = {
-  decision: "dec",
-  incident: "inc",
-  entity: "entity",
-  pattern: "pat",
-  workflow: "wf",
-  note: "note",
-  session: "session",
+  decision: getIdPrefix("decision"),
+  incident: getIdPrefix("incident"),
+  entity: getIdPrefix("entity"),
+  pattern: getIdPrefix("pattern"),
+  workflow: getIdPrefix("workflow"),
+  note: getIdPrefix("note"),
+  session: getIdPrefix("session"),
 };
 
 /** Reverse map: prefix → KnowledgeType (inverse of TYPE_PREFIX). */
@@ -25,16 +35,19 @@ export const PREFIX_TO_TYPE: Record<string, KnowledgeType> = Object.fromEntries(
 
 const V2_LITE_ID_RE = /^([a-z]+)-\d+$/;
 
-/** Parse a v2-lite ID (e.g. "dec-001") into its KnowledgeType and target directory, or null for UUIDs. */
+/**
+ * Parse a v2-lite ID (e.g. "dec-001", "txn-001") into its knowledge type and
+ * target directory, or null for UUIDs. Resolves through the runtime registry so
+ * extension prefixes (e.g. "txn") work alongside the built-in ones.
+ */
 export function parseV2LiteId(
   id: string,
-): { type: KnowledgeType; dir: string } | null {
+): { type: string; dir: string } | null {
   const match = V2_LITE_ID_RE.exec(id);
   if (!match?.[1]) return null;
-  const prefix = match[1];
-  const type = PREFIX_TO_TYPE[prefix];
+  const type = getTypeForPrefix(match[1]);
   if (!type) return null;
-  return { type, dir: knowledgeTypeDir(type) };
+  return { type, dir: getKnowledgeTypeDir(type) };
 }
 
 /** Extract last-modified date as ISO string from any frontmatter format (v1 or v2-lite). */
@@ -72,42 +85,22 @@ export function slugify(text: string): string {
     .slice(0, 50);
 }
 
-/** Map KnowledgeType to directory path relative to baseDir. */
-export function knowledgeTypeDir(type: KnowledgeType): string {
-  switch (type) {
-    case "decision":
-      return "semantic/decisions";
-    case "entity":
-      return "semantic/entities";
-    case "incident":
-      return "episodic/incidents";
-    case "pattern":
-      return "procedural/patterns";
-    case "workflow":
-      return "procedural/workflows";
-    case "note":
-      return "semantic/notes";
-    case "session":
-      return "episodic/sessions";
-  }
+/**
+ * Map a knowledge type to its directory path relative to baseDir.
+ * Delegates to the runtime registry (C1) so extension types resolve too.
+ */
+export function knowledgeTypeDir(type: KnowledgeType | string): string {
+  return getKnowledgeTypeDir(type);
 }
 
-/** Map KnowledgeType to v1 MemoryType for the memories table. */
+/**
+ * Map a knowledge type to its v1 MemoryType bucket for the memories table.
+ * Delegates to the runtime registry (C1); unknown types fall back to "semantic".
+ */
 export function knowledgeToMemoryType(
-  type: KnowledgeType,
+  type: KnowledgeType | string,
 ): "semantic" | "episodic" | "procedural" {
-  switch (type) {
-    case "decision":
-    case "entity":
-    case "note":
-      return "semantic";
-    case "incident":
-    case "session":
-      return "episodic";
-    case "pattern":
-    case "workflow":
-      return "procedural";
-  }
+  return getV1MemoryType(type);
 }
 
 /** Get the inverse connection type for bidirectional connections. */

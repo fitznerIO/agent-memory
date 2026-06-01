@@ -6,15 +6,25 @@ import { createConsolidationAgent } from "./consolidation/agent.ts";
 import type { ExistingEntry } from "./consolidation/types.ts";
 import { createEmbeddingEngine } from "./embedding/engine.ts";
 import type { EmbeddingEngine } from "./embedding/types.ts";
+import { createMemoryApi } from "./extensions/facade.ts";
+import { type LoadedExtension, loadExtensions } from "./extensions/loader.ts";
+import {
+  installExtension,
+  listInstalledExtensions,
+  uninstallExtension,
+} from "./extensions/manager.ts";
+import { AVAILABLE_EXTENSIONS } from "./extensions/registry.ts";
+import type { ExtensionContext } from "./extensions/types.ts";
 import { createGitManager } from "./git/manager.ts";
 import type { GitManager } from "./git/types.ts";
-import { parseMarkdown, serializeMarkdown } from "./memory/parser.ts";
 import { createMemoryStore } from "./memory/store.ts";
 import type { MemoryStore } from "./memory/types.ts";
 import { createSearchIndex } from "./search/index.ts";
 import type { SearchIndex } from "./search/types.ts";
+import { parseMarkdown, serializeMarkdown } from "./shared/markdown.ts";
 export type { MemoryConfig } from "./shared/config.ts";
 export { findProjectRoot } from "./shared/config.ts";
+import { getRegisteredKnowledgeTypes } from "./shared/knowledge-types.ts";
 import {
   getInverseType,
   getLastModified,
@@ -115,6 +125,44 @@ export interface MemorySystem {
     minAccessCount?: number;
   }): Promise<DecayOutput>;
 
+  // Extension System (C3): read/write an `ext.<name>` frontmatter block on an
+  // entry. Writes to the project store only (C6); does NOT re-index — ext.* is
+  // not in the FTS/vector index, its structured copy lives in the <ext>_meta table.
+  setExtensionData(
+    id: string,
+    name: string,
+    data: Record<string, unknown>,
+  ): Promise<void>;
+  getExtensionData<T = unknown>(id: string, name: string): Promise<T | null>;
+
+  /** Extensions loaded at start() (installed + available). Consumed by the CLI
+   *  tool dispatch (Task 006). Empty before start() or when none are installed. */
+  getLoadedExtensions(): LoadedExtension[];
+
+  /** Install/uninstall an available extension by name (CLI, Task 006). The
+   *  orchestrator builds the ExtensionContext (facade + project extensionDb). */
+  installExtensionByName(name: string): Promise<void>;
+  uninstallExtensionByName(name: string): Promise<void>;
+  /** Available extensions and whether each is installed (CLI `extensions list`). */
+  listExtensions(): Array<{
+    name: string;
+    version: string;
+    description: string;
+    installed: boolean;
+  }>;
+  /** Detailed status of one installed extension (CLI `extensions status <name>`):
+   *  registry row (version, installed_at, table, row count) + tool names. */
+  extensionStatus(name: string): {
+    name: string;
+    version: string;
+    description: string | null;
+    installed: boolean;
+    installedAt?: string;
+    table?: string;
+    rowCount?: number;
+    tools: string[];
+  } | null;
+
   // Lifecycle
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -205,6 +253,7 @@ export function createMemorySystem(
     : undefined;
 
   let session: SessionState | null = null;
+  let loadedExtensions: LoadedExtension[] = [];
 
   async function indexMemoryWithEmbedding(
     memory: Memory,
@@ -366,7 +415,7 @@ export function createMemorySystem(
     return deduped.slice(0, limit);
   }
 
-  return {
+  const system: MemorySystem = {
     store: project.store,
     searchIndex: project.searchIndex,
     git: project.git,
@@ -622,6 +671,11 @@ export function createMemorySystem(
         const id = result.memory.metadata.id;
         await project.store.delete(id);
         await project.searchIndex.remove(id);
+        // Also remove the v2-lite knowledge row (+ its tags/connections). This
+        // deletes the `knowledge` parent row, which fires ON DELETE CASCADE on
+        // any extension `<ext>_meta` table keyed by entry_id (Extension System
+        // §5.2/§12). Without this, knowledge/ext rows would be orphaned.
+        await project.searchIndex.removeKnowledge(id);
         forgotten.push(result.memory.filePath);
       }
 
@@ -885,15 +939,11 @@ export function createMemorySystem(
       let totalEmbeddings = 0;
       let knowledgeEntries = 0;
 
-      const KNOWLEDGE_TYPES = new Set([
-        "decision",
-        "incident",
-        "entity",
-        "pattern",
-        "workflow",
-        "note",
-        "session",
-      ]);
+      // Type gate derived from the runtime registry (C1): core types PLUS any
+      // types registered by installed extensions. A hardcoded set here would
+      // silently drop extension entries (e.g. transaction/idea) from the
+      // knowledge table on rebuild, breaking every JOIN <ext>_meta query.
+      const KNOWLEDGE_TYPES = new Set(getRegisteredKnowledgeTypes());
 
       // Deferred connections: collected in pass 1, inserted in pass 2
       // after all knowledge entries exist (avoids FK constraint violations).
@@ -1031,6 +1081,32 @@ export function createMemorySystem(
               );
             }
           }
+        }
+      }
+
+      // Reconcile extension tables against the rebuilt knowledge set. resetAll
+      // suppressed CASCADE so ext rows survived the wipe; rebuild re-inserted
+      // every still-existing entry. Any ext row whose entry_id was NOT
+      // re-inserted (its .md was deleted out-of-band) is now a dangling orphan —
+      // SQLite won't re-validate it. Markdown is the source of truth, so prune
+      // those orphans here (this is the orchestrator's job, keeping the search
+      // module's resetAll free of extension-table knowledge).
+      //
+      // Drive this off the `extensions` REGISTRY table, not the in-memory
+      // loadedExtensions: an extension that is installed but not currently loaded
+      // (e.g. dropped from AVAILABLE_EXTENSIONS) still has a table whose orphans
+      // must be reconciled.
+      const extDb = project.searchIndex.extensionDb();
+      const extTables = extDb.all<{ table_name: string }>(
+        "SELECT table_name FROM extensions",
+      );
+      for (const { table_name } of extTables) {
+        try {
+          extDb.run(
+            `DELETE FROM ${table_name} WHERE entry_id NOT IN (SELECT id FROM knowledge)`,
+          );
+        } catch {
+          // Table may not exist (extension uninstalled mid-rebuild) — ignore.
         }
       }
 
@@ -1258,6 +1334,92 @@ export function createMemorySystem(
       };
     },
 
+    async setExtensionData(
+      id: string,
+      name: string,
+      data: Record<string, unknown>,
+    ): Promise<void> {
+      // C3: write the ext.<name> frontmatter block on the project-store entry.
+      // 1. resolve id → file (project store only, C6)
+      const memory = await project.store.read(id);
+      const absPath = join(config.baseDir, memory.filePath);
+      // 2. parse, 3. set flat literal key (yaml preserves "ext.<name>")
+      const raw = readFileSync(absPath, "utf-8");
+      const doc = parseMarkdown(raw);
+      doc.frontmatter[`ext.${name}`] = data;
+      // 4. serialize + write. No core re-index: ext.* is not FTS/vector indexed;
+      //    its structured copy lives in <ext>_meta.
+      writeFileSync(absPath, serializeMarkdown(doc));
+    },
+
+    getLoadedExtensions(): LoadedExtension[] {
+      // Copy so callers can't mutate the system's internal list.
+      return [...loadedExtensions];
+    },
+
+    async installExtensionByName(name: string): Promise<void> {
+      const ext = AVAILABLE_EXTENSIONS.find((e) => e.name === name);
+      if (!ext) throw new Error(`Unknown extension: ${name}`);
+      await installExtension(buildExtensionContext(), ext);
+    },
+
+    async uninstallExtensionByName(name: string): Promise<void> {
+      const ext = AVAILABLE_EXTENSIONS.find((e) => e.name === name);
+      if (!ext) throw new Error(`Unknown extension: ${name}`);
+      await uninstallExtension(buildExtensionContext(), ext);
+    },
+
+    listExtensions() {
+      const installed = new Set(
+        listInstalledExtensions(buildExtensionContext()).map((r) => r.name),
+      );
+      return AVAILABLE_EXTENSIONS.map((e) => ({
+        name: e.name,
+        version: e.version,
+        description: e.description,
+        installed: installed.has(e.name),
+      }));
+    },
+
+    extensionStatus(name: string) {
+      const ext = AVAILABLE_EXTENSIONS.find((e) => e.name === name);
+      if (!ext) return null;
+      const ctx = buildExtensionContext();
+      const row = listInstalledExtensions(ctx).find((r) => r.name === name);
+      let rowCount: number | undefined;
+      if (row) {
+        try {
+          rowCount = ctx.db.get<{ c: number }>(
+            `SELECT COUNT(*) AS c FROM ${row.table_name}`,
+          )?.c;
+        } catch {
+          rowCount = undefined;
+        }
+      }
+      return {
+        name: ext.name,
+        version: row?.version ?? ext.version,
+        description: row?.description ?? ext.description,
+        installed: row !== undefined,
+        installedAt: row?.installed_at,
+        table: row?.table_name,
+        rowCount,
+        tools: ext.tools.map((t) => t.name),
+      };
+    },
+
+    async getExtensionData<T = unknown>(
+      id: string,
+      name: string,
+    ): Promise<T | null> {
+      const memory = await project.store.read(id);
+      const absPath = join(config.baseDir, memory.filePath);
+      const raw = readFileSync(absPath, "utf-8");
+      const doc = parseMarkdown(raw);
+      const value = doc.frontmatter[`ext.${name}`];
+      return value === undefined ? null : (value as T);
+    },
+
     async start(): Promise<void> {
       session = {
         sessionId: randomUUID(),
@@ -1289,6 +1451,18 @@ export function createMemorySystem(
 
       // Load core memories
       await project.store.loadCore();
+
+      // Extension System (C4/C6): load installed extensions on the PROJECT store's
+      // connection. Runs after the store is ready and before any tool dispatch,
+      // so extension knowledgeTypes register in time. The facade (createMemoryApi)
+      // is built from this same orchestrator so extensions reach the core through
+      // the sanctioned integration point.
+      loadedExtensions = await loadExtensions({
+        db: project.searchIndex.extensionDb(),
+        memoryPath: config.baseDir,
+        memory: createMemoryApi(system),
+        available: AVAILABLE_EXTENSIONS,
+      });
     },
 
     async stop(): Promise<void> {
@@ -1300,4 +1474,21 @@ export function createMemorySystem(
       session = null;
     },
   };
+
+  /** Build an ExtensionContext bound to the project store + core facade. Used by
+   *  install/uninstall/list. Defined after `system` so the facade can reach it. */
+  function buildExtensionContext(): ExtensionContext {
+    return {
+      db: project.searchIndex.extensionDb(),
+      memory: createMemoryApi(system),
+      memoryPath: config.baseDir,
+      log: {
+        info: (m) => console.error(`[ext] ${m}`),
+        warn: (m) => console.error(`[ext] WARN ${m}`),
+        error: (m) => console.error(`[ext] ERROR ${m}`),
+      },
+    };
+  }
+
+  return system;
 }

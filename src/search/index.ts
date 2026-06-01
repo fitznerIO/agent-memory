@@ -4,9 +4,11 @@ import { dirname, join } from "node:path";
 import { newStemmer } from "snowball-stemmers";
 import * as sqliteVec from "sqlite-vec";
 import type { MemoryConfig } from "../shared/config.ts";
+import { getIdPrefix } from "../shared/knowledge-types.ts";
 import type {
   Connection,
   ConnectionType,
+  ExtensionDB,
   HybridSearchOptions,
   InverseConnectionType,
   KnowledgeEntry,
@@ -14,7 +16,6 @@ import type {
   Memory,
   SearchResult,
 } from "../shared/types.ts";
-import { TYPE_PREFIX } from "../shared/utils.ts";
 import type { ConnectionRow, IndexStats, SearchIndex } from "./types.ts";
 
 // Snowball stemmers for German and English
@@ -832,8 +833,8 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       };
     },
 
-    async getNextSequentialId(type: KnowledgeType): Promise<string> {
-      const prefix = TYPE_PREFIX[type] ?? type;
+    async getNextSequentialId(type: KnowledgeType | string): Promise<string> {
+      const prefix = getIdPrefix(type);
       const row = selectMaxIdForType.get(type);
 
       if (!row?.max_id) {
@@ -954,19 +955,31 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
     },
 
     resetAll(): void {
-      // Clear regular tables
-      db.run("DELETE FROM connections");
-      db.run("DELETE FROM entry_tags");
-      db.run("DELETE FROM knowledge");
+      // Disable FK enforcement during the wipe so DELETE FROM knowledge does NOT
+      // cascade-delete child rows. rebuild-index re-inserts the same knowledge.id
+      // values (read from frontmatter) right after, restoring valid FK targets.
+      // This preserves any FK-child rows (e.g. extension <ext>_meta tables) across
+      // a rebuild; the orchestrator's rebuildIndex prunes rows orphaned by a
+      // deleted .md afterward. (Pragma is connection-scoped and cannot change
+      // inside a txn; resetAll runs as bare statements, so the toggle is honored.)
+      db.run("PRAGMA foreign_keys = OFF");
+      try {
+        // Clear regular tables
+        db.run("DELETE FROM connections");
+        db.run("DELETE FROM entry_tags");
+        db.run("DELETE FROM knowledge");
 
-      // Clear vec table
-      db.run("DELETE FROM memories_vec");
+        // Clear vec table
+        db.run("DELETE FROM memories_vec");
 
-      // Clear FTS (standalone table, no triggers)
-      db.run("DELETE FROM memories_fts");
+        // Clear FTS (standalone table, no triggers)
+        db.run("DELETE FROM memories_fts");
 
-      // Clear memories
-      db.run("DELETE FROM memories");
+        // Clear memories
+        db.run("DELETE FROM memories");
+      } finally {
+        db.run("PRAGMA foreign_keys = ON");
+      }
     },
 
     async getAllKnowledgeEntries(): Promise<KnowledgeEntry[]> {
@@ -1009,6 +1022,24 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
         });
       }
       return entries;
+    },
+
+    extensionDb(): ExtensionDB {
+      // Scoped wrapper over this store's connection (C4). Reuses the SAME `db`
+      // where foreign_keys=ON / WAL / setCustomSQLite already hold, so extension
+      // tables' ON DELETE CASCADE fires on memory_forget. One-off prepared
+      // statements via db.query; params spread positionally.
+      return {
+        run(sql: string, params: unknown[] = []): void {
+          db.query(sql).run(...(params as never[]));
+        },
+        get<T>(sql: string, params: unknown[] = []): T | undefined {
+          return (db.query(sql).get(...(params as never[])) as T) ?? undefined;
+        },
+        all<T>(sql: string, params: unknown[] = []): T[] {
+          return db.query(sql).all(...(params as never[])) as T[];
+        },
+      };
     },
   };
 }

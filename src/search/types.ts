@@ -1,5 +1,6 @@
 import type {
   ConnectionType,
+  ExtensionDB,
   HybridSearchOptions,
   InverseConnectionType,
   KnowledgeEntry,
@@ -40,7 +41,7 @@ export interface SearchIndex {
   indexKnowledge(entry: Omit<KnowledgeEntry, "connections">): Promise<void>;
   removeKnowledge(id: string): Promise<void>;
   getKnowledgeById(id: string): Promise<KnowledgeEntry | null>;
-  getNextSequentialId(type: KnowledgeType): Promise<string>;
+  getNextSequentialId(type: KnowledgeType | string): Promise<string>;
 
   // v2-lite: Tag operations
   insertTags(entryId: string, tags: string[]): Promise<void>;
@@ -80,4 +81,9 @@ export interface SearchIndex {
 
   // Get all knowledge entries (for rebuild/decay)
   getAllKnowledgeEntries(): Promise<KnowledgeEntry[]>;
+
+  // Extension System (C4): scoped DB accessor wrapping this store's connection.
+  // Lets the extension runtime create/query its own tables (and read core tables)
+  // on the SAME connection where foreign_keys=ON holds, so CASCADE works.
+  extensionDb(): ExtensionDB;
 }
