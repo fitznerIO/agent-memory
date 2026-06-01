@@ -14,8 +14,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { serializeMarkdown } from "../memory/parser.ts";
 import { getIdPrefix } from "../shared/knowledge-types.ts";
+import { serializeMarkdown } from "../shared/markdown.ts";
 import type { KnowledgeType } from "../shared/types.ts";
 import { slugify } from "../shared/utils.ts";
 

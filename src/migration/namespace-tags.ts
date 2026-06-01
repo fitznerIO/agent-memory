@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { parseMarkdown, serializeMarkdown } from "../memory/parser.ts";
+import { parseMarkdown, serializeMarkdown } from "../shared/markdown.ts";
 
 /** Common namespace mappings for known tool/technology tags. */
 const KNOWN_MAPPINGS: Record<string, string> = {

@@ -9,11 +9,11 @@ import type { EmbeddingEngine } from "./embedding/types.ts";
 import { loadExtensions } from "./extensions/loader.ts";
 import { createGitManager } from "./git/manager.ts";
 import type { GitManager } from "./git/types.ts";
-import { parseMarkdown, serializeMarkdown } from "./memory/parser.ts";
 import { createMemoryStore } from "./memory/store.ts";
 import type { MemoryStore } from "./memory/types.ts";
 import { createSearchIndex } from "./search/index.ts";
 import type { SearchIndex } from "./search/types.ts";
+import { parseMarkdown, serializeMarkdown } from "./shared/markdown.ts";
 export type { MemoryConfig } from "./shared/config.ts";
 export { findProjectRoot } from "./shared/config.ts";
 import { getRegisteredKnowledgeTypes } from "./shared/knowledge-types.ts";
@@ -634,6 +634,11 @@ export function createMemorySystem(
         const id = result.memory.metadata.id;
         await project.store.delete(id);
         await project.searchIndex.remove(id);
+        // Also remove the v2-lite knowledge row (+ its tags/connections). This
+        // deletes the `knowledge` parent row, which fires ON DELETE CASCADE on
+        // any extension `<ext>_meta` table keyed by entry_id (Extension System
+        // §5.2/§12). Without this, knowledge/ext rows would be orphaned.
+        await project.searchIndex.removeKnowledge(id);
         forgotten.push(result.memory.filePath);
       }
 
