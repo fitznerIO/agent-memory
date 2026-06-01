@@ -1,3 +1,4 @@
+import { bookmarkExtension } from "./examples/bookmark.ts";
 import type { Extension } from "./types.ts";
 
 /**
@@ -10,4 +11,4 @@ import type { Extension } from "./types.ts";
  *
  * Billing and IdeaForge are appended by their own tasks.
  */
-export const AVAILABLE_EXTENSIONS: Extension[] = [];
+export const AVAILABLE_EXTENSIONS: Extension[] = [bookmarkExtension];

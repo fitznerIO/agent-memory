@@ -1084,6 +1084,25 @@ export function createMemorySystem(
         }
       }
 
+      // Reconcile extension tables against the rebuilt knowledge set. resetAll
+      // suppressed CASCADE so ext rows survived the wipe; rebuild re-inserted
+      // every still-existing entry. Any ext row whose entry_id was NOT
+      // re-inserted (its .md was deleted out-of-band) is now a dangling orphan —
+      // SQLite won't re-validate it. Markdown is the source of truth, so prune
+      // those orphans here (this is the orchestrator's job, keeping the search
+      // module's resetAll free of extension-table knowledge).
+      const extDb = project.searchIndex.extensionDb();
+      for (const ext of loadedExtensions) {
+        const table = ext.extension.schema.table;
+        try {
+          extDb.run(
+            `DELETE FROM ${table} WHERE entry_id NOT IN (SELECT id FROM knowledge)`,
+          );
+        } catch {
+          // Table may not exist (extension uninstalled mid-rebuild) — ignore.
+        }
+      }
+
       return {
         totalDocuments: allMemories.length,
         totalEmbeddings,

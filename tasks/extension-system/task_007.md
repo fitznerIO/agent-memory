@@ -8,12 +8,15 @@
 
 Eine erste echte (minimale) Extension implementieren, die das Interface gegen einen echten Use Case validiert — Anpassungen am Interface falls nötig. Ziel: das Extension System läuft end-to-end.
 
-**Test-Layout** (`tests/extensions/`):
+**Test-Layout** (`tests/extensions/`) — Frontmatter-Verhalten ist in die anderen
+Tests gefaltet statt einer eigenen `frontmatter.test.ts`:
 ```
 tests/extensions/
 ├── loader.test.ts
-├── manager.test.ts
-└── frontmatter.test.ts
+├── manager.test.ts           # install/uninstall + frontmatter cleanup + CASCADE
+├── tool-registry.test.ts     # dispatch (Variante A)
+├── isolation.test.ts         # §15 cross-extension non-interference
+└── reference-extension.test.ts  # end-to-end §15 via bookmark
 ```
 
 **Erfolgskriterien (§15), als Tests prüfbar:**
