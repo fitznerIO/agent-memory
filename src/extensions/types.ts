@@ -3,7 +3,7 @@ import type {
   ExtensionDB,
   KnowledgeEntry,
   MemoryStoreInput,
-  SearchResult,
+  StoreSource,
 } from "../shared/types.ts";
 
 // Re-export the canonical ExtensionDB (defined in shared/types.ts, Task 002) so
@@ -40,6 +40,20 @@ export interface SearchFilters {
   type?: string;
 }
 
+/** A search hit returned to extensions. Only the fields the core search output
+ *  genuinely carries — no fabricated timestamps/importance. */
+export interface MemorySearchHit {
+  id?: string;
+  title?: string;
+  type: string;
+  content: string;
+  tags?: string[];
+  score: number;
+  source: string;
+  lastAccessed: string;
+  storeSource: StoreSource;
+}
+
 /**
  * Narrow facade over the core orchestrator handed to extension tools (§4.1).
  * Implemented in Task 005; the interface lives here so the contract is fixed now.
@@ -48,7 +62,7 @@ export interface SearchFilters {
  */
 export interface MemoryAPI {
   store(input: MemoryStoreInput): Promise<string>;
-  search(query: string, filters?: SearchFilters): Promise<SearchResult[]>;
+  search(query: string, filters?: SearchFilters): Promise<MemorySearchHit[]>;
   read(id: string): Promise<KnowledgeEntry | null>;
   /** Replace an entry's body. `reason` is recorded in the git history (the core
    *  update() requires it); facade synthesizes a default when omitted. */

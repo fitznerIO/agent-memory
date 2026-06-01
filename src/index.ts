@@ -6,7 +6,9 @@ import { createConsolidationAgent } from "./consolidation/agent.ts";
 import type { ExistingEntry } from "./consolidation/types.ts";
 import { createEmbeddingEngine } from "./embedding/engine.ts";
 import type { EmbeddingEngine } from "./embedding/types.ts";
-import { loadExtensions } from "./extensions/loader.ts";
+import { createMemoryApi } from "./extensions/facade.ts";
+import { type LoadedExtension, loadExtensions } from "./extensions/loader.ts";
+import { AVAILABLE_EXTENSIONS } from "./extensions/registry.ts";
 import { createGitManager } from "./git/manager.ts";
 import type { GitManager } from "./git/types.ts";
 import { createMemoryStore } from "./memory/store.ts";
@@ -127,6 +129,10 @@ export interface MemorySystem {
   ): Promise<void>;
   getExtensionData<T = unknown>(id: string, name: string): Promise<T | null>;
 
+  /** Extensions loaded at start() (installed + available). Consumed by the CLI
+   *  tool dispatch (Task 006). Empty before start() or when none are installed. */
+  getLoadedExtensions(): LoadedExtension[];
+
   // Lifecycle
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -217,6 +223,7 @@ export function createMemorySystem(
     : undefined;
 
   let session: SessionState | null = null;
+  let loadedExtensions: LoadedExtension[] = [];
 
   async function indexMemoryWithEmbedding(
     memory: Memory,
@@ -378,7 +385,7 @@ export function createMemorySystem(
     return deduped.slice(0, limit);
   }
 
-  return {
+  const system: MemorySystem = {
     store: project.store,
     searchIndex: project.searchIndex,
     git: project.git,
@@ -1289,6 +1296,11 @@ export function createMemorySystem(
       writeFileSync(absPath, serializeMarkdown(doc));
     },
 
+    getLoadedExtensions(): LoadedExtension[] {
+      // Copy so callers can't mutate the system's internal list.
+      return [...loadedExtensions];
+    },
+
     async getExtensionData<T = unknown>(
       id: string,
       name: string,
@@ -1334,9 +1346,16 @@ export function createMemorySystem(
       await project.store.loadCore();
 
       // Extension System (C4/C6): load installed extensions on the PROJECT store's
-      // connection. No-op stub until Task 005. Runs after the store is ready and
-      // before any tool dispatch, so extension knowledgeTypes register in time.
-      await loadExtensions(project.searchIndex.extensionDb(), config.baseDir);
+      // connection. Runs after the store is ready and before any tool dispatch,
+      // so extension knowledgeTypes register in time. The facade (createMemoryApi)
+      // is built from this same orchestrator so extensions reach the core through
+      // the sanctioned integration point.
+      loadedExtensions = await loadExtensions({
+        db: project.searchIndex.extensionDb(),
+        memoryPath: config.baseDir,
+        memory: createMemoryApi(system),
+        available: AVAILABLE_EXTENSIONS,
+      });
     },
 
     async stop(): Promise<void> {
@@ -1348,4 +1367,6 @@ export function createMemorySystem(
       session = null;
     },
   };
+
+  return system;
 }
