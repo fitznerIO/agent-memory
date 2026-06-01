@@ -8,7 +8,13 @@ import { createEmbeddingEngine } from "./embedding/engine.ts";
 import type { EmbeddingEngine } from "./embedding/types.ts";
 import { createMemoryApi } from "./extensions/facade.ts";
 import { type LoadedExtension, loadExtensions } from "./extensions/loader.ts";
+import {
+  installExtension,
+  listInstalledExtensions,
+  uninstallExtension,
+} from "./extensions/manager.ts";
 import { AVAILABLE_EXTENSIONS } from "./extensions/registry.ts";
+import type { ExtensionContext } from "./extensions/types.ts";
 import { createGitManager } from "./git/manager.ts";
 import type { GitManager } from "./git/types.ts";
 import { createMemoryStore } from "./memory/store.ts";
@@ -132,6 +138,30 @@ export interface MemorySystem {
   /** Extensions loaded at start() (installed + available). Consumed by the CLI
    *  tool dispatch (Task 006). Empty before start() or when none are installed. */
   getLoadedExtensions(): LoadedExtension[];
+
+  /** Install/uninstall an available extension by name (CLI, Task 006). The
+   *  orchestrator builds the ExtensionContext (facade + project extensionDb). */
+  installExtensionByName(name: string): Promise<void>;
+  uninstallExtensionByName(name: string): Promise<void>;
+  /** Available extensions and whether each is installed (CLI `extensions list`). */
+  listExtensions(): Array<{
+    name: string;
+    version: string;
+    description: string;
+    installed: boolean;
+  }>;
+  /** Detailed status of one installed extension (CLI `extensions status <name>`):
+   *  registry row (version, installed_at, table, row count) + tool names. */
+  extensionStatus(name: string): {
+    name: string;
+    version: string;
+    description: string | null;
+    installed: boolean;
+    installedAt?: string;
+    table?: string;
+    rowCount?: number;
+    tools: string[];
+  } | null;
 
   // Lifecycle
   start(): Promise<void>;
@@ -1301,6 +1331,57 @@ export function createMemorySystem(
       return [...loadedExtensions];
     },
 
+    async installExtensionByName(name: string): Promise<void> {
+      const ext = AVAILABLE_EXTENSIONS.find((e) => e.name === name);
+      if (!ext) throw new Error(`Unknown extension: ${name}`);
+      await installExtension(buildExtensionContext(), ext);
+    },
+
+    async uninstallExtensionByName(name: string): Promise<void> {
+      const ext = AVAILABLE_EXTENSIONS.find((e) => e.name === name);
+      if (!ext) throw new Error(`Unknown extension: ${name}`);
+      await uninstallExtension(buildExtensionContext(), ext);
+    },
+
+    listExtensions() {
+      const installed = new Set(
+        listInstalledExtensions(buildExtensionContext()).map((r) => r.name),
+      );
+      return AVAILABLE_EXTENSIONS.map((e) => ({
+        name: e.name,
+        version: e.version,
+        description: e.description,
+        installed: installed.has(e.name),
+      }));
+    },
+
+    extensionStatus(name: string) {
+      const ext = AVAILABLE_EXTENSIONS.find((e) => e.name === name);
+      if (!ext) return null;
+      const ctx = buildExtensionContext();
+      const row = listInstalledExtensions(ctx).find((r) => r.name === name);
+      let rowCount: number | undefined;
+      if (row) {
+        try {
+          rowCount = ctx.db.get<{ c: number }>(
+            `SELECT COUNT(*) AS c FROM ${row.table_name}`,
+          )?.c;
+        } catch {
+          rowCount = undefined;
+        }
+      }
+      return {
+        name: ext.name,
+        version: row?.version ?? ext.version,
+        description: row?.description ?? ext.description,
+        installed: row !== undefined,
+        installedAt: row?.installed_at,
+        table: row?.table_name,
+        rowCount,
+        tools: ext.tools.map((t) => t.name),
+      };
+    },
+
     async getExtensionData<T = unknown>(
       id: string,
       name: string,
@@ -1367,6 +1448,21 @@ export function createMemorySystem(
       session = null;
     },
   };
+
+  /** Build an ExtensionContext bound to the project store + core facade. Used by
+   *  install/uninstall/list. Defined after `system` so the facade can reach it. */
+  function buildExtensionContext(): ExtensionContext {
+    return {
+      db: project.searchIndex.extensionDb(),
+      memory: createMemoryApi(system),
+      memoryPath: config.baseDir,
+      log: {
+        info: (m) => console.error(`[ext] ${m}`),
+        warn: (m) => console.error(`[ext] WARN ${m}`),
+        error: (m) => console.error(`[ext] ERROR ${m}`),
+      },
+    };
+  }
 
   return system;
 }
