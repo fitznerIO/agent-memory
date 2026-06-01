@@ -8,7 +8,10 @@ import {
   uninstallExtension,
 } from "../../src/extensions/manager.ts";
 import type { Extension, ExtensionContext } from "../../src/extensions/types.ts";
-import { unregisterKnowledgeType } from "../../src/shared/knowledge-types.ts";
+import {
+  isKnowledgeType,
+  unregisterKnowledgeType,
+} from "../../src/shared/knowledge-types.ts";
 import { cleanupTempDir, createTempDir } from "../helpers/fixtures.ts";
 
 const TEST_TIMEOUT = 120_000;
@@ -113,6 +116,20 @@ describe("Extension manager (install/uninstall, Task 004)", () => {
     await expect(installExtension(ctx, demoExtension)).rejects.toThrow(
       /already installed/,
     );
+  });
+
+  test("uninstall unregisters knowledge types; in-process reinstall is clean", async () => {
+    await installExtension(ctx, demoExtension);
+    expect(isKnowledgeType("demo")).toBe(true);
+
+    await uninstallExtension(ctx, demoExtension);
+    // type/prefix released so a long-lived process doesn't leak it
+    expect(isKnowledgeType("demo")).toBe(false);
+
+    // reinstall in the same process re-registers cleanly (no throw, type back)
+    await installExtension(ctx, demoExtension);
+    expect(isKnowledgeType("demo")).toBe(true);
+    await uninstallExtension(ctx, demoExtension);
   });
 
   test("uninstall drops table, removes registry row, keeps no residue", async () => {

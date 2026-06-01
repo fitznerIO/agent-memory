@@ -1091,12 +1091,19 @@ export function createMemorySystem(
       // SQLite won't re-validate it. Markdown is the source of truth, so prune
       // those orphans here (this is the orchestrator's job, keeping the search
       // module's resetAll free of extension-table knowledge).
+      //
+      // Drive this off the `extensions` REGISTRY table, not the in-memory
+      // loadedExtensions: an extension that is installed but not currently loaded
+      // (e.g. dropped from AVAILABLE_EXTENSIONS) still has a table whose orphans
+      // must be reconciled.
       const extDb = project.searchIndex.extensionDb();
-      for (const ext of loadedExtensions) {
-        const table = ext.extension.schema.table;
+      const extTables = extDb.all<{ table_name: string }>(
+        "SELECT table_name FROM extensions",
+      );
+      for (const { table_name } of extTables) {
         try {
           extDb.run(
-            `DELETE FROM ${table} WHERE entry_id NOT IN (SELECT id FROM knowledge)`,
+            `DELETE FROM ${table_name} WHERE entry_id NOT IN (SELECT id FROM knowledge)`,
           );
         } catch {
           // Table may not exist (extension uninstalled mid-rebuild) — ignore.

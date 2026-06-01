@@ -1,6 +1,7 @@
 import {
   isKnowledgeType,
   registerKnowledgeType,
+  unregisterKnowledgeType,
 } from "../shared/knowledge-types.ts";
 import { cleanFrontmatterNamespace } from "./frontmatter.ts";
 import type {
@@ -108,11 +109,19 @@ export async function uninstallExtension(
   // 3. Remove from registry.
   db.run("DELETE FROM extensions WHERE name = ?", [ext.name]);
 
-  // 4. Clean ext.<name> frontmatter from the project store only (C6 — ext keys
+  // 4. Unregister this extension's knowledge types from the runtime registry so
+  //    an in-process reinstall (or a different extension reusing the prefix)
+  //    starts from a clean slate. (One-shot CLI rebuilds the registry per run,
+  //    but a long-lived process would otherwise leak the type/prefix.)
+  for (const kt of ext.knowledgeTypes ?? []) {
+    unregisterKnowledgeType(kt.type);
+  }
+
+  // 5. Clean ext.<name> frontmatter from the project store only (C6 — ext keys
   //    never exist in the global store, so no global scan is needed).
   const cleaned = await cleanFrontmatterNamespace(memoryPath, ext.name);
 
-  // 5. Commit the bulk rewrite so it doesn't linger as an uncommitted diff
+  // 6. Commit the bulk rewrite so it doesn't linger as an uncommitted diff
   //    mixed with the user's own changes.
   if (cleaned > 0) {
     await memory.commit(`chore: uninstall extension ${ext.name}`, "extensions");
