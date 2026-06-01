@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { newStemmer } from "snowball-stemmers";
 import * as sqliteVec from "sqlite-vec";
 import type { MemoryConfig } from "../shared/config.ts";
+import { getIdPrefix } from "../shared/knowledge-types.ts";
 import type {
   Connection,
   ConnectionType,
@@ -14,7 +15,6 @@ import type {
   Memory,
   SearchResult,
 } from "../shared/types.ts";
-import { TYPE_PREFIX } from "../shared/utils.ts";
 import type { ConnectionRow, IndexStats, SearchIndex } from "./types.ts";
 
 // Snowball stemmers for German and English
@@ -833,7 +833,7 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
     },
 
     async getNextSequentialId(type: KnowledgeType): Promise<string> {
-      const prefix = TYPE_PREFIX[type] ?? type;
+      const prefix = getIdPrefix(type);
       const row = selectMaxIdForType.get(type);
 
       if (!row?.max_id) {

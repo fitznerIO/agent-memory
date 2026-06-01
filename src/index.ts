@@ -15,6 +15,7 @@ import { createSearchIndex } from "./search/index.ts";
 import type { SearchIndex } from "./search/types.ts";
 export type { MemoryConfig } from "./shared/config.ts";
 export { findProjectRoot } from "./shared/config.ts";
+import { getRegisteredKnowledgeTypes } from "./shared/knowledge-types.ts";
 import {
   getInverseType,
   getLastModified,
@@ -885,15 +886,11 @@ export function createMemorySystem(
       let totalEmbeddings = 0;
       let knowledgeEntries = 0;
 
-      const KNOWLEDGE_TYPES = new Set([
-        "decision",
-        "incident",
-        "entity",
-        "pattern",
-        "workflow",
-        "note",
-        "session",
-      ]);
+      // Type gate derived from the runtime registry (C1): core types PLUS any
+      // types registered by installed extensions. A hardcoded set here would
+      // silently drop extension entries (e.g. transaction/idea) from the
+      // knowledge table on rebuild, breaking every JOIN <ext>_meta query.
+      const KNOWLEDGE_TYPES = new Set(getRegisteredKnowledgeTypes());
 
       // Deferred connections: collected in pass 1, inserted in pass 2
       // after all knowledge entries exist (avoids FK constraint violations).

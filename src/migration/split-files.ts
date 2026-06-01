@@ -15,8 +15,9 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { serializeMarkdown } from "../memory/parser.ts";
+import { getIdPrefix } from "../shared/knowledge-types.ts";
 import type { KnowledgeType } from "../shared/types.ts";
-import { TYPE_PREFIX, slugify } from "../shared/utils.ts";
+import { slugify } from "../shared/utils.ts";
 
 /** Map bulk file paths to their knowledge type. */
 const BULK_FILE_MAP: Array<{
@@ -143,7 +144,7 @@ export function splitBulkFile(
     };
   }
 
-  const prefix = TYPE_PREFIX[type] ?? type;
+  const prefix = getIdPrefix(type);
   const outDir = join(baseDir, subdir);
   mkdirSync(outDir, { recursive: true });
 
