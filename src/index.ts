@@ -14,7 +14,7 @@ import {
   uninstallExtension,
 } from "./extensions/manager.ts";
 import { AVAILABLE_EXTENSIONS } from "./extensions/registry.ts";
-import type { ExtensionContext } from "./extensions/types.ts";
+import type { Extension, ExtensionContext } from "./extensions/types.ts";
 import { createGitManager } from "./git/manager.ts";
 import type { GitManager } from "./git/types.ts";
 import { createMemoryStore } from "./memory/store.ts";
@@ -70,6 +70,22 @@ export type {
   SearchResult,
   StoreSource,
 } from "./shared/types.ts";
+
+// Public extension-authoring API: lets a consumer define an Extension (and its
+// tool handlers, which use ctx.log / ctx.memory.search) in a fully typed way.
+export type {
+  Extension,
+  ExtensionTool,
+  ExtensionColumn,
+  ExtensionSchema,
+  ExtensionKnowledgeType,
+  ExtensionContext,
+  ExtensionDB,
+  MemoryAPI,
+  Logger,
+  SearchFilters,
+  MemorySearchHit,
+} from "./extensions/types.ts";
 
 import type {
   ArchiveCandidate,
@@ -233,10 +249,43 @@ function createModuleSet(
   };
 }
 
+/** Options for `createMemorySystem` beyond the config overrides. */
+export interface CreateMemoryOptions {
+  /** Consumer-defined extensions, registered alongside the built-in ones.
+   *  A name collision with a built-in (or another external) extension throws. */
+  extensions?: Extension[];
+}
+
+/**
+ * Merge built-in and consumer-supplied extensions into one list. A duplicate
+ * name throws, so a consumer can never silently shadow a built-in extension.
+ */
+function mergeExtensions(
+  builtin: Extension[],
+  external: Extension[],
+): Extension[] {
+  const byName = new Map<string, Extension>(builtin.map((e) => [e.name, e]));
+  for (const e of external) {
+    if (byName.has(e.name)) {
+      throw new Error(`Extension name already registered: "${e.name}"`);
+    }
+    byName.set(e.name, e);
+  }
+  return [...byName.values()];
+}
+
 export function createMemorySystem(
   overrides?: Partial<MemoryConfig>,
+  opts?: CreateMemoryOptions,
 ): MemorySystem {
   const config = { ...createDefaultConfig(), ...overrides };
+
+  // Built-in + consumer extensions, merged once. Every access site below uses
+  // this closure-local list instead of AVAILABLE_EXTENSIONS directly.
+  const available = mergeExtensions(
+    AVAILABLE_EXTENSIONS,
+    opts?.extensions ?? [],
+  );
 
   // Create project store modules
   const project = createModuleSet(config);
@@ -1358,22 +1407,34 @@ export function createMemorySystem(
     },
 
     async installExtensionByName(name: string): Promise<void> {
-      const ext = AVAILABLE_EXTENSIONS.find((e) => e.name === name);
+      const ext = available.find((e) => e.name === name);
       if (!ext) throw new Error(`Unknown extension: ${name}`);
-      await installExtension(buildExtensionContext(), ext);
+      const ctx = buildExtensionContext();
+      await installExtension(ctx, ext);
+      // Activate immediately in-process: add to the loaded set so its tools are
+      // dispatchable without requiring another start(). installExtension already
+      // registered its knowledge types + ran onInstall on the same context.
+      loadedExtensions = [
+        ...loadedExtensions.filter((l) => l.extension.name !== name),
+        { extension: ext, tools: ext.tools, context: ctx },
+      ];
     },
 
     async uninstallExtensionByName(name: string): Promise<void> {
-      const ext = AVAILABLE_EXTENSIONS.find((e) => e.name === name);
+      const ext = available.find((e) => e.name === name);
       if (!ext) throw new Error(`Unknown extension: ${name}`);
       await uninstallExtension(buildExtensionContext(), ext);
+      // Drop it from the loaded set so its tools stop dispatching in-process.
+      loadedExtensions = loadedExtensions.filter(
+        (l) => l.extension.name !== name,
+      );
     },
 
     listExtensions() {
       const installed = new Set(
         listInstalledExtensions(buildExtensionContext()).map((r) => r.name),
       );
-      return AVAILABLE_EXTENSIONS.map((e) => ({
+      return available.map((e) => ({
         name: e.name,
         version: e.version,
         description: e.description,
@@ -1382,7 +1443,7 @@ export function createMemorySystem(
     },
 
     extensionStatus(name: string) {
-      const ext = AVAILABLE_EXTENSIONS.find((e) => e.name === name);
+      const ext = available.find((e) => e.name === name);
       if (!ext) return null;
       const ctx = buildExtensionContext();
       const row = listInstalledExtensions(ctx).find((r) => r.name === name);
@@ -1461,7 +1522,7 @@ export function createMemorySystem(
         db: project.searchIndex.extensionDb(),
         memoryPath: config.baseDir,
         memory: createMemoryApi(system),
-        available: AVAILABLE_EXTENSIONS,
+        available,
       });
     },
 

@@ -5,6 +5,38 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-06-01
+
+### Added
+
+- **Public extension registration for consumers.** `createMemorySystem` now takes
+  an optional second argument, `{ extensions?: Extension[] }`, so a project that
+  uses agent-memory as a dependency can register its own extensions alongside the
+  built-in ones — same lifecycle (`install` / `uninstall` / `load` / `status`),
+  no need to edit the library.
+- **Public extension-authoring types** re-exported from the package entry point:
+  `Extension`, `ExtensionTool`, `ExtensionColumn`, `ExtensionSchema`,
+  `ExtensionKnowledgeType`, `ExtensionContext`, `ExtensionDB`, `MemoryAPI`,
+  `Logger`, `SearchFilters`, `MemorySearchHit` — so consumers can define
+  extensions and tool handlers in a fully typed way.
+- `CreateMemoryOptions` interface for the new options argument.
+
+### Changed
+
+- `installExtensionByName` / `uninstallExtensionByName` now keep the in-process
+  loaded-extension set in sync, so a freshly installed extension's tools are
+  dispatchable immediately — no second `start()` required.
+
+### Notes
+
+- Built-in and consumer extensions are merged into one list; a **name collision
+  throws** (a consumer cannot silently shadow a built-in extension).
+- Consumer-defined extensions are available through the **library API only** —
+  the `agent-memory` CLI builds the system without them (it has no way to know
+  them). Their tools run in the consumer's process via the dispatch map.
+- Backward compatible: calling `createMemorySystem(overrides)` without the second
+  argument behaves exactly as in 0.2.0.
+
 ## [0.2.0] — 2026-06-01
 
 ### Added
@@ -67,5 +99,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI (`agent-memory`) and a programmatic API (`createMemorySystem()`).
 - Per-project and optional global memory stores.
 
+[0.3.0]: https://github.com/fitznerIO/agent-memory/releases/tag/v0.3.0
 [0.2.0]: https://github.com/fitznerIO/agent-memory/releases/tag/v0.2.0
 [0.1.0]: https://github.com/fitznerIO/agent-memory/releases/tag/v0.1.0
