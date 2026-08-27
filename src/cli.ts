@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildExtensionDispatch } from "./extensions/tool-registry.ts";
@@ -75,6 +76,18 @@ async function initSystem(
     overrides.globalSqlitePath = join(globalDir, ".index", "search.sqlite");
   }
 
+  // A missing project store is not an error — the first call in a fresh project creates it. But it
+  // is also exactly what a wrong working directory looks like, and that used to pass silently: the
+  // run built an empty store and every search came back with nothing, indistinguishable from a
+  // store that simply had no match. The warning goes to stderr so stdout stays parseable JSON.
+  const projectDir =
+    (overrides.baseDir as string | undefined) ?? findProjectRoot(process.cwd());
+  if (!existsSync(projectDir)) {
+    console.error(
+      `[agent-memory] No memory store at ${projectDir} — a new, empty one will be created. If you expected existing memories, the working directory or --project-dir points elsewhere.`,
+    );
+  }
+
   const system = createMemorySystem(overrides);
   await system.start();
   return system;
@@ -90,7 +103,7 @@ Commands:
   note           Save a note to memory
   search         Hybrid search across all memories
   read           Read a specific memory file
-  update         Update memory content
+  update         Update memory content (--mode replace|append, default: replace)
   forget         Delete matching memories
   commit         Git commit pending changes
   store          Create individual knowledge file (v2-lite)
@@ -113,6 +126,7 @@ Examples:
   agent-memory note --content "User prefers TypeScript" --type semantic --importance medium
   agent-memory search --query "TypeScript preferences" --limit 5
   agent-memory read --path "semantic/abc123.md"
+  agent-memory update --path "semantic/abc123.md" --content "Nachtrag" --reason "Ergaenzung" --mode append
   agent-memory store --title "Webhook statt Polling" --type decision --content "..."
   agent-memory connect --source dec-001 --target inc-001 --type related
   agent-memory traverse --start dec-001 --direction both
@@ -207,10 +221,20 @@ Examples:
       }
 
       case "update": {
+        // Reject an unknown --mode instead of silently falling back to "replace". This flag decides
+        // whether the existing body survives; a typo used to overwrite the file without a word.
+        const mode = flags.mode ?? "replace";
+        if (mode !== "replace" && mode !== "append") {
+          console.error(
+            `Invalid --mode: ${mode} (expected "replace" or "append")`,
+          );
+          process.exit(1);
+        }
         const result = await system.update({
           path: requireFlag(flags, "path"),
           content: requireFlag(flags, "content"),
           reason: requireFlag(flags, "reason"),
+          mode,
         });
         console.log(JSON.stringify(result, null, 2));
         break;

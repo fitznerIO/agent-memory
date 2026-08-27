@@ -652,9 +652,18 @@ export function createMemorySystem(
     async update(input: MemoryUpdateInput): Promise<MemoryUpdateOutput> {
       const current = await project.store.readByPath(input.path);
       const oldContent = current.content;
+
+      // "append" keeps the existing body — the whole point of the mode. Separated by a blank line
+      // so the result stays valid markdown; an empty existing body means there is nothing to
+      // separate from.
+      const nextContent =
+        input.mode === "append" && oldContent.trim().length > 0
+          ? `${oldContent.trimEnd()}\n\n${input.content}`
+          : input.content;
+
       const updated = await project.store.update(
         current.metadata.id,
-        input.content,
+        nextContent,
       );
 
       let indexed = false;
@@ -665,13 +674,14 @@ export function createMemorySystem(
         // Indexing failed, continue
       }
 
-      const diff = `Updated: ${input.reason}. Previous length: ${oldContent.length}, new length: ${input.content.length}`;
+      // Both numbers describe what was WRITTEN, not what was passed in — with mode "append" those
+      // differ, and reporting the input length made a growing file look like a shrinking one.
+      const diff = `Updated: ${input.reason}. Previous length: ${oldContent.length}, new length: ${nextContent.length}`;
 
       // v2-lite: Connection discovery on significant change (>20% content diff)
       const lengthRatio =
         oldContent.length > 0
-          ? Math.abs(input.content.length - oldContent.length) /
-            oldContent.length
+          ? Math.abs(nextContent.length - oldContent.length) / oldContent.length
           : 1;
 
       let suggestedConnections:

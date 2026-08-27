@@ -5,6 +5,41 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Search no longer crashes on hyphenated queries.** `sanitizeFtsQuery` used a
+  split regex (`/\b(\w+)-(\w+)\b/g`) that missed chained hyphens and non-ASCII
+  words, so `"2026-08-27"` and `"NEUSTART-ÜBERGABE"` reached FTS5 with a hyphen
+  intact — which FTS5 reads as column-exclusion syntax and rejects with
+  `no such column: <token>`. Sanitizing is now a whitelist (`\p{L}\p{N}_` plus
+  whitespace, unicode-aware), so umlauts survive and no punctuation can leak
+  through. Comma and semicolon were failing the same way and are covered too.
+- **A rejected FTS query no longer takes down hybrid search.** `searchText` now
+  returns an empty result and logs a warning when FTS5 refuses to parse the
+  MATCH expression, so the vector half still runs and the caller gets fewer
+  results rather than none. Only parse errors are swallowed — a missing table,
+  a closed database or an I/O error still throws, because that is a bug in the
+  index rather than bad user input.
+- **`update --mode append` appends instead of replacing.** The mode was parsed by
+  the CLI and then dropped, so an append silently overwrote the existing body.
+  `MemoryUpdateInput` now carries `mode?: "replace" | "append"` (default
+  `"replace"`, unchanged behaviour); append keeps the current body and adds the
+  new content after a blank line. The reported diff quotes the length actually
+  written, not the input length — that mismatch is why a shrinking file looked
+  like a normal update.
+- **An unknown `--mode` is rejected** instead of falling back to `replace`. The
+  flag decides whether the existing body survives; a typo used to overwrite it
+  without a word.
+
+### Added
+
+- **The CLI warns when it is about to create an empty store.** Running from the
+  wrong working directory used to build a fresh, empty store in silence — every
+  search then came back with nothing, indistinguishable from a store without a
+  match. The warning goes to stderr, so stdout stays parseable JSON.
+
 ## [0.3.0] — 2026-06-01
 
 ### Added

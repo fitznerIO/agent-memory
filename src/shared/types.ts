@@ -136,6 +136,9 @@ export interface MemoryUpdateInput {
   path: string;
   content: string;
   reason: string;
+  /** How `content` relates to the existing body. Defaults to "replace".
+   *  "append" keeps the current body and adds `content` after a blank line. */
+  mode?: "replace" | "append";
 }
 
 export interface MemoryUpdateOutput {
