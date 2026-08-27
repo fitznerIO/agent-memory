@@ -605,19 +605,20 @@ describe("SearchIndex", () => {
   // -- close ------------------------------------------------------------------
 
   describe("close", () => {
-    test("closes database connection cleanly", async () => {
-      // Close the database
+    // searchText() swallows a query FTS5 refuses to parse (inc-005), but NOT this: using a closed
+    // index is a bug in the caller, and answering [] would hide it as "nothing found". The
+    // narrowed catch in searchText tells the two apart by the error — bun:sqlite raises a plain
+    // `Error: Statement has finalized` here, not one of FTS5's parser errors.
+    //
+    // The previous version of this test asserted the same thing in a way that could not fail: the
+    // `expect(true).toBe(false)` inside the `try` threw an assertion error that its own `catch`
+    // swallowed. It stayed green either way.
+    test("using the index after close still throws", async () => {
       idx.close();
 
-      // Attempting to use the index after close should reject
-      try {
-        await idx.searchText("anything");
-        // If we reach here, the search did not throw -- fail
-        expect(true).toBe(false);
-      } catch {
-        // Expected: database is closed
-        expect(true).toBe(true);
-      }
+      await expect(idx.searchText("anything")).rejects.toThrow(
+        /finalized|closed/i,
+      );
     });
   });
 });

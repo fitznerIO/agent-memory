@@ -172,21 +172,45 @@ const TYPE_WEIGHT: Record<string, number> = {
 };
 
 /**
+ * True only for the errors FTS5 raises when it cannot parse the MATCH expression itself.
+ *
+ * The distinction matters because these are the only failures searchText() is allowed to swallow:
+ * the expression is built from user input, so a rejected one means "no FTS hits", not "the index
+ * is broken". Everything else must keep throwing — `no such table` (index not built), a closed
+ * database (bun:sqlite raises a plain `Error: Statement has finalized`, not a SQLiteError), disk
+ * I/O. Matching on the class alone is not enough: `no such table` is a SQLiteError too.
+ *
+ * `no such column` is on the list because the SQL around the MATCH is a fixed literal — the only
+ * place a column name can come from here is the query, where FTS5 reads `foo:` and `-foo` as
+ * column syntax.
+ */
+const FTS_QUERY_ERROR =
+  /^(fts5:|no such column:|unterminated string|unknown special query)/i;
+
+function isFtsQueryError(error: unknown): boolean {
+  return error instanceof Error && FTS_QUERY_ERROR.test(error.message);
+}
+
+/**
  * Sanitize a query string for FTS5 MATCH syntax.
- * Removes characters that would cause FTS5 parse errors (/, ., etc.),
- * splits hyphenated terms into separate tokens, and appends stems
+ * Removes characters that would cause FTS5 parse errors (/, ., -, etc.) and appends stems
  * so that morphological variants match indexed stems.
  */
 function sanitizeFtsQuery(query: string): string {
   let sanitized = query;
 
-  // Split hyphenated words into separate tokens
-  sanitized = sanitized.replace(/\b(\w+)-(\w+)\b/g, (_match, a, b) => {
-    return `${a} ${b}`;
-  });
-
-  // Remove FTS5 special operators and characters that cause parse errors
-  sanitized = sanitized.replace(/[/.:!?@#$%^&*()=+\[\]{}<>|\\~`"']/g, " ");
+  // Keep letters, digits, underscore and whitespace — drop everything else.
+  //
+  // This is a whitelist on purpose. The previous blacklist of "special" characters kept missing
+  // ones that FTS5 treats as syntax, and each miss was a hard parse error rather than a bad result:
+  //   * the hyphen — `-token` is column-exclusion syntax, so "NEUSTART-ÜBERGABE" threw
+  //     "no such column: ÜBERGABE" (a split regex /\b(\w+)-(\w+)\b/g was tried first and missed
+  //     both chained hyphens like "2026-08-27" and non-ASCII words, since \w and \b are ASCII-only
+  //     without the u flag);
+  //   * comma and semicolon — plain syntax errors, and both are ordinary in German queries.
+  // A blacklist can always miss the next one; this cannot. \p{L} keeps umlauts and every other
+  // script intact, which the ASCII-only \w did not.
+  sanitized = sanitized.replace(/[^\p{L}\p{N}_\s]/gu, " ");
 
   // Collapse multiple spaces
   sanitized = sanitized.replace(/\s+/g, " ").trim();
@@ -546,7 +570,26 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       const sanitized = sanitizeFtsQuery(query);
       if (!sanitized) return [];
 
-      const rows = searchFts.all(sanitized, effectiveLimit);
+      // Degrade instead of throwing — but only for a rejected MATCH expression. sanitizeFtsQuery
+      // covers the parse errors we know about, and FTS5 syntax is large enough that the next
+      // unhandled character would again take down searchHybrid() as a whole, so the vector search
+      // never ran and the caller got nothing instead of merely fewer results. An empty FTS side is
+      // a result the hybrid merge handles. Anything that is NOT a rejected query keeps
+      // propagating: a broken index or a closed database is our bug, not bad user input, and
+      // silently answering [] would hide it.
+      let rows: FtsResultRow[];
+      try {
+        rows = searchFts.all(sanitized, effectiveLimit);
+      } catch (error) {
+        if (!isFtsQueryError(error)) throw error;
+        console.warn(
+          `[search] FTS5 rejected query ${JSON.stringify(sanitized)}, falling back to vector-only: ${
+            (error as Error).message
+          }`,
+        );
+        return [];
+      }
+
       return rows.map((row) => ({
         memory: rowToMemory(row),
         score: -row.bm25_score, // Negate: bm25() returns negative, more negative = better

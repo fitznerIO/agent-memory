@@ -303,8 +303,11 @@ bun run cli -- search --query "API integration" --tags "tech/api" --connected-to
 # Read a specific memory
 bun run cli -- read --path "semantic/abc123.md"
 
-# Update a memory
+# Update a memory (replaces the body)
 bun run cli -- update --path "semantic/abc.md" --content "New content" --reason "Updated info"
+
+# Append to a memory instead of replacing it
+bun run cli -- update --path "semantic/abc.md" --content "One more paragraph" --reason "Addendum" --mode append
 
 # Forget a memory
 bun run cli -- forget --query "outdated info" --scope entry --confirm
@@ -494,7 +497,7 @@ await memory.stop();
 | `note` | `{ content, type, importance }` | Save a session note |
 | `search` | `{ query, type?, limit?, minScore?, tags?, connected_to? }` | Hybrid search across all memories |
 | `read` | `{ path }` | Read a specific memory file |
-| `update` | `{ path, content, reason }` | Update content + auto-reindex |
+| `update` | `{ path, content, reason, mode? }` | Update content + auto-reindex. `mode: "append"` keeps the existing body and adds to it; default is `"replace"` |
 | `forget` | `{ query, scope, confirm }` | Delete matching memories |
 | `commit` | `{ message, type }` | Git commit with semantic type |
 | `memoryStore` | `{ title, type, content, tags?, connections? }` | Store a knowledge entry |
