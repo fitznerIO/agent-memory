@@ -16,8 +16,11 @@ Everything runs locally. No cloud, no API keys, no external services.
 - **Per-project + global** — Project-scoped memories with a shared global knowledge base.
 
 ```bash
-bun install && bun test
+bun install
+bun run typecheck
 ```
+
+Do not run the full test suite — see [Commands](#commands). Tests run per module.
 
 ## How It Works
 
@@ -589,8 +592,12 @@ import type {
 
 ## Commands
 
+> **Never run the full test suite.** `bun test` without a path — and the `test`, `test:watch`
+> and `test:coverage` scripts that wrap it — loads its own fp32 copy of the embedding model per
+> store instance, accumulates >15 GB and gets OOM-killed. Run the per-module scripts below, or a
+> single file, one at a time.
+
 ```bash
-bun test                    # All tests (234)
 bun run test:memory         # Memory store + parser (25)
 bun run test:search         # Search index (17)
 bun run test:git            # Git manager (22)
