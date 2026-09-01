@@ -38,8 +38,14 @@ Plugins that add their own data + tools without touching the core schema. Author
 
 ## Commands
 
+> **Never run the full test suite.** `bun test` without a path loads its own fp32 copy of the
+> embedding model per store instance, accumulates >15 GB and gets OOM-killed — it took the VPS
+> down several times on 2026-08-27. Run one directory or one file at a time, sequentially.
+> The same applies to the `test`, `test:watch` and `test:coverage` package scripts — all three
+> run the full suite, so `bun run test` is the same trap under a different name.
+> Tracked as inc-008; the fix is a process-wide model cache or mock embeddings in tests.
+
 ```bash
-bun test                  # Run all tests
 bun test tests/memory/    # Run memory module tests
 bun test tests/search/    # Run search module tests
 bun test tests/git/       # Run git module tests
@@ -47,6 +53,7 @@ bun test tests/embedding/ # Run embedding module tests
 bun test tests/consolidation/ # Run consolidation module tests
 bun test tests/extensions/    # Run extension system tests
 bun test tests/integration/   # Run integration tests
+bun test tests/search/index.test.ts  # Run a single file (preferred over a whole directory)
 bun run test:benchmark    # Search quality benchmark (P@3, MRR, score analysis)
 bun run typecheck         # TypeScript strict check
 bun run lint              # Biome linter
