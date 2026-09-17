@@ -247,10 +247,11 @@ describe("searchHybrid: RRF fallback rank", () => {
    * fallback. It asserted a property it could not observe.
    *
    * So: six embedded fillers and one entry with no embedding at all. The vector
-   * pool is 15 deep and only six entries can fill it, which is exactly the state
-   * a store is in right after `rebuild()` drops the embeddings (see the note at
-   * src/search/index.ts around "Total embeddings will be 0 after rebuild"). Now
-   * the two fallbacks are different numbers and the assertion can see them.
+   * pool is 15 deep and only six entries can fill it. A partly-embedded store is
+   * a real state, not a contrived one -- `rebuild()` drops the embeddings
+   * entirely (see the note at src/search/index.ts around "Total embeddings will
+   * be 0 after rebuild"), and re-embedding fills them back in over time. Now the
+   * two fallbacks are different numbers and the assertion can see them.
    *
    * With k = 3 and missingRank = 16:
    *   fts-only  (full-text rank 1, no vector row) = 0.5/4  + 0.5/19 = 0.151316
