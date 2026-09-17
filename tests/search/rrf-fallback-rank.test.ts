@@ -94,8 +94,8 @@ const FIXED_TIME = Date.UTC(2026, 0, 15);
 function makeMemory(
   id: string,
   content: string,
-  embedding: Float32Array,
-): Memory & { embedding: Float32Array } {
+  embedding?: Float32Array,
+): Memory & { embedding?: Float32Array } {
   return {
     metadata: {
       id,
@@ -235,19 +235,54 @@ describe("searchHybrid: RRF fallback rank", () => {
     expect(topTwo).toEqual(["target-a", "target-b"]);
   });
 
-  test("both channels use the same fallback rank, so a lone hit in either channel scores the same", async () => {
-    // Symmetry check that does not depend on the weights: with weightFts ==
-    // weightVector, an entry found only by FTS and an entry found only by the
-    // vector search at the same rank must end up with the same score.
-    await indexFillers(22, []);
+  /**
+   * Symmetry check that does not depend on the weights: with weightFts ==
+   * weightVector, an entry found only by full-text and an entry found only by
+   * the vector search, each at rank 1 of its own channel, must score the same.
+   *
+   * The corpus matters more than it looks. An earlier version of this test used
+   * 23 embedded entries, which fills the vector pool -- and when the pool is
+   * full, `vecResults.length + 1` and `poolSize + 1` are the SAME NUMBER, so the
+   * test passed even with the vector side reverted to the old length-based
+   * fallback. It asserted a property it could not observe.
+   *
+   * So: six embedded fillers and one entry with no embedding at all. The vector
+   * pool is 15 deep and only six entries can fill it, which is exactly the state
+   * a store is in right after `rebuild()` drops the embeddings (see the note at
+   * src/search/index.ts around "Total embeddings will be 0 after rebuild"). Now
+   * the two fallbacks are different numbers and the assertion can see them.
+   *
+   * With k = 3 and missingRank = 16:
+   *   fts-only  (full-text rank 1, no vector row) = 0.5/4  + 0.5/19 = 0.151316
+   *   filler-0  (vector rank 1, no word match)    = 0.5/19 + 0.5/4  = 0.151316
+   *   filler-1  (vector rank 2)                   = 0.5/19 + 0.5/5  = 0.126316
+   * The first two tie and normalise to 1.0 together; filler-1 is lower, so the
+   * tie is a real observation and not an artefact of both being the maximum.
+   *
+   * Revert the vector side alone and fts-only becomes 0.5/4 + 0.5/10 = 0.175,
+   * which breaks the tie. That mutation is what this test exists to catch.
+   */
+  test("both channels use the same fallback rank, even when the vector pool is not full", async () => {
+    for (let i = 0; i < 6; i++) {
+      await idx.index(
+        makeMemory(`filler-${i}`, FILLER[i]!, vectorAtDistance(i)),
+      );
+    }
+    // No embedding: this entry cannot appear in the vector results at all.
     await idx.index(
       makeMemory(
         "fts-only",
         "the hosting invoice from netcup arrived this morning",
-        vectorAtDistance(40), // far outside the pool of 15
       ),
     );
-    // filler-0 sits at distance 0, so it is vector rank 1 with no "netcup".
+
+    // Guard the premise. If a later change grows this corpus past the pool, the
+    // two fallback formulas collapse into the same number and this test goes
+    // back to proving nothing -- fail loudly instead.
+    const vecResults = await idx.searchVector(QUERY_VEC, 15);
+    expect(vecResults.length).toBe(6);
+    expect(vecResults.length).toBeLessThan(15); // poolSize at limit 5
+
     const results = await idx.searchHybrid("netcup", QUERY_VEC, {
       limit: 5,
       weightFts: 0.5,
@@ -257,11 +292,14 @@ describe("searchHybrid: RRF fallback rank", () => {
     });
 
     const ftsOnly = results.find((r) => r.memory.metadata.id === "fts-only");
-    const vecOnly = results.find((r) => r.memory.metadata.id !== "fts-only");
+    const vecOnly = results.find((r) => r.memory.metadata.id === "filler-0");
     expect(ftsOnly).toBeDefined();
     expect(vecOnly).toBeDefined();
     // Both are "rank 1 in one channel, missing from the other".
     expect(ftsOnly!.score).toBeCloseTo(vecOnly!.score, 6);
+    // And they really are the top two, i.e. something below them anchors the
+    // normalisation -- otherwise the equality above would be trivially true.
+    expect(results[2]!.score).toBeLessThan(results[0]!.score);
   });
 
   /**
@@ -319,9 +357,12 @@ describe("searchHybrid: RRF fallback rank", () => {
    * than hiding it. Fixing it means changing how poolSize is derived, which is
    * outside this change.
    *
-   * A second thing this pins: a fallback accidentally hard-coded to some constant
-   * would pass every other test in this file, because they all run at limit 5.
-   * Here the expected positions differ per limit, so a constant cannot satisfy them.
+   * A second thing this pins: every other test in this file runs at limit 5, so a
+   * fallback accidentally hard-coded to a constant would pass them all. Here the
+   * expected positions differ per limit, which rules out most constants -- 16, the
+   * value that is correct at limit 5, fails here. It does not rule out every
+   * constant on its own (9 also satisfies these positions); the position-3 test
+   * above catches that one. The two together close the gap.
    */
   test("how much the fix helps depends on the limit, and at limit 1 it does not help at all", async () => {
     await indexFillers(23, [3]);
@@ -356,9 +397,11 @@ describe("searchHybrid: RRF fallback rank", () => {
    * SILENT FAILURE from the briefing's own list, proven here:
    * "minScore, das nach der Min-Max-Normalisierung echte Treffer wegfiltert".
    *
-   * searchHybrid normalises scores min-max across the whole candidate pool, so
-   * the worst candidate always ends up at exactly 0.0 -- whatever its actual
-   * relevance was. Any minScore above 0 then deletes it.
+   * searchHybrid normalises scores min-max across the whole candidate pool. Once
+   * there are at least two candidates with different scores, the worst one ends
+   * up at exactly 0.0 -- whatever its actual relevance was. Any minScore above 0
+   * then deletes it. (With a single candidate, or with every score equal, the
+   * implementation assigns 1.0 instead, so the hole needs a real spread.)
    *
    * That is invisible from outside: the caller asked for up to 10 results, got 5,
    * and nothing says one was dropped. Here every single entry in the corpus
@@ -369,7 +412,7 @@ describe("searchHybrid: RRF fallback rank", () => {
    * minScore 0.1, but src/index.ts:547 passes `input.minScore ?? 0.3` -- so the
    * real cut is at 0.3, not 0.1.
    */
-  test("minScore drops a real word match, because min-max normalisation always scores the worst candidate 0", async () => {
+  test("minScore drops a real word match, because min-max normalisation puts the worst candidate at exactly 0", async () => {
     // Six entries, every one of them containing "alpha".
     for (let i = 0; i < 6; i++) {
       await idx.index(
@@ -393,13 +436,20 @@ describe("searchHybrid: RRF fallback rank", () => {
     // The worst candidate sits at exactly 0 after normalisation.
     expect(unfiltered[5]!.score).toBe(0);
 
-    const filtered = await idx.searchHybrid("alpha", QUERY_VEC, {
+    const atPointOne = await idx.searchHybrid("alpha", QUERY_VEC, {
       limit: 10,
       minScore: 0.1,
     });
-    expect(filtered.length).toBe(5); // one real match silently gone
+    expect(atPointOne.length).toBe(5); // one real match silently gone
 
     const lost = unfiltered[5]!.memory.metadata.id;
-    expect(filtered.map((r) => r.memory.metadata.id)).not.toContain(lost);
+    expect(atPointOne.map((r) => r.memory.metadata.id)).not.toContain(lost);
+
+    // At the value the CLI actually passes, two of the six are gone.
+    const atProductionDefault = await idx.searchHybrid("alpha", QUERY_VEC, {
+      limit: 10,
+      minScore: 0.3,
+    });
+    expect(atProductionDefault.length).toBe(4);
   });
 });
