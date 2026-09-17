@@ -239,6 +239,13 @@ Hybrid search combining three signals via [Reciprocal Rank Fusion](https://plg.u
 
 Default weights: FTS 0.3 / Vector 0.5 / Recency 0.2 (configurable).
 
+A document found by only one of the two channels still needs a rank for the other
+one. That substitute rank is `poolSize + 1` (`poolSize = limit * 3`) for both
+channels — deliberately not the length of the individual result list. The vector
+search always returns a full pool, full-text search only real matches, so a
+length-based substitute made "missing from full-text" score almost as well as an
+actual full-text rank 1 whenever the query was rare, and buried exact matches.
+
 ### Git Manager
 
 Every change is versioned with semantic commit messages:

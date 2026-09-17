@@ -228,7 +228,10 @@ describe("searchHybrid: RRF fallback rank", () => {
       limit: 5,
     });
 
-    const topTwo = results.slice(0, 2).map((r) => r.memory.metadata.id).sort();
+    const topTwo = results
+      .slice(0, 2)
+      .map((r) => r.memory.metadata.id)
+      .sort();
     expect(topTwo).toEqual(["target-a", "target-b"]);
   });
 
@@ -236,7 +239,7 @@ describe("searchHybrid: RRF fallback rank", () => {
     // Symmetry check that does not depend on the weights: with weightFts ==
     // weightVector, an entry found only by FTS and an entry found only by the
     // vector search at the same rank must end up with the same score.
-    await indexFillers(22, [0]);
+    await indexFillers(22, []);
     await idx.index(
       makeMemory(
         "fts-only",
@@ -244,7 +247,7 @@ describe("searchHybrid: RRF fallback rank", () => {
         vectorAtDistance(40), // far outside the pool of 15
       ),
     );
-    // The closest vector neighbour (distance 0) is a filler with no "netcup".
+    // filler-0 sits at distance 0, so it is vector rank 1 with no "netcup".
     const results = await idx.searchHybrid("netcup", QUERY_VEC, {
       limit: 5,
       weightFts: 0.5,
@@ -271,7 +274,7 @@ describe("searchHybrid: RRF fallback rank", () => {
    *
    * With limit 5 (poolSize 15, k = 3, fallback M = 16) an exact hit that is
    * missing from the vector pool scores 0.4/4 + 0.55/19 = 0.12895, while the
-   * two closest vector neighbours score 0.15855 and 0.13855. So it lands at
+   * two closest vector neighbours score 0.15855 and 0.13105. So it lands at
    * position 3 -- inside the result window, but not first.
    *
    * Before the fix it scored 0.4/4 + 0.55/19 too, but the neighbours got
@@ -293,7 +296,110 @@ describe("searchHybrid: RRF fallback rank", () => {
 
     const results = await idx.searchHybrid("netcup", QUERY_VEC, { limit: 5 });
 
-    const position = results.findIndex((r) => r.memory.metadata.id === "target");
+    const position = results.findIndex(
+      (r) => r.memory.metadata.id === "target",
+    );
     expect(position).toBe(2); // 0-indexed -> position 3
+  });
+
+  /**
+   * The fallback is `poolSize + 1`, and `poolSize` is `limit * 3` -- so how much
+   * this fix helps depends on the limit. At a small limit the vector pool is too
+   * shallow for the exact hit to be rescued at all.
+   *
+   * This matters beyond search: `forget` (src/index.ts) runs searchHybrid at
+   * `limit: 1` for `--scope entry` and `limit: 10` for a topic, then DELETES
+   * every result. At limit 1 the pool is 3 deep, k = 1 and the fallback is 4:
+   *
+   *   target (FTS rank 1, outside a 3-deep pool) = 0.4/2 + 0.55/5  = 0.31000
+   *   filler at vector rank 1, no word match     = 0.4/5 + 0.55/2  = 0.35500
+   *
+   * The entry containing the word loses, and `forget --scope entry` deletes a
+   * file that does not contain the search word. This test pins that floor rather
+   * than hiding it. Fixing it means changing how poolSize is derived, which is
+   * outside this change.
+   *
+   * A second thing this pins: a fallback accidentally hard-coded to some constant
+   * would pass every other test in this file, because they all run at limit 5.
+   * Here the expected positions differ per limit, so a constant cannot satisfy them.
+   */
+  test("how much the fix helps depends on the limit, and at limit 1 it does not help at all", async () => {
+    await indexFillers(23, [3]);
+    await idx.index(
+      makeMemory(
+        "target",
+        "the hosting invoice from netcup arrived this morning",
+        vectorAtDistance(3), // vector rank 4
+      ),
+    );
+
+    const positionAt = async (limit: number) => {
+      const res = await idx.searchHybrid("netcup", QUERY_VEC, { limit });
+      return res.findIndex((r) => r.memory.metadata.id === "target");
+    };
+
+    // limit 1 -> poolSize 3, k 1, fallback 4. Target is outside a 3-deep pool
+    // and loses to the nearest vector neighbour: not returned at all.
+    expect(await positionAt(1)).toBe(-1);
+
+    // limit 2 -> poolSize 6, k 1, fallback 7. Target is inside the pool now but
+    // still behind the nearest neighbour.
+    expect(await positionAt(2)).toBe(1);
+
+    // limit 3 -> poolSize 9, k 2, fallback 10. From here the exact hit wins.
+    expect(await positionAt(3)).toBe(0);
+    expect(await positionAt(5)).toBe(0);
+    expect(await positionAt(10)).toBe(0);
+  });
+
+  /**
+   * SILENT FAILURE from the briefing's own list, proven here:
+   * "minScore, das nach der Min-Max-Normalisierung echte Treffer wegfiltert".
+   *
+   * searchHybrid normalises scores min-max across the whole candidate pool, so
+   * the worst candidate always ends up at exactly 0.0 -- whatever its actual
+   * relevance was. Any minScore above 0 then deletes it.
+   *
+   * That is invisible from outside: the caller asked for up to 10 results, got 5,
+   * and nothing says one was dropped. Here every single entry in the corpus
+   * contains the search word, so a caller would reasonably expect all of them
+   * back. One is missing.
+   *
+   * Note the production default is worse than it looks: the config ships
+   * minScore 0.1, but src/index.ts:547 passes `input.minScore ?? 0.3` -- so the
+   * real cut is at 0.3, not 0.1.
+   */
+  test("minScore drops a real word match, because min-max normalisation always scores the worst candidate 0", async () => {
+    // Six entries, every one of them containing "alpha".
+    for (let i = 0; i < 6; i++) {
+      await idx.index(
+        makeMemory(
+          `hit-${i}`,
+          `alpha appears here, ${FILLER[i]}`,
+          vectorAtDistance(i),
+        ),
+      );
+    }
+
+    const fts = await idx.searchText("alpha", 30);
+    expect(fts.length).toBe(6); // all six really do match
+
+    // Limit 10 > 6 entries, so nothing is cut by the limit.
+    const unfiltered = await idx.searchHybrid("alpha", QUERY_VEC, {
+      limit: 10,
+      minScore: 0,
+    });
+    expect(unfiltered.length).toBe(6);
+    // The worst candidate sits at exactly 0 after normalisation.
+    expect(unfiltered[5]!.score).toBe(0);
+
+    const filtered = await idx.searchHybrid("alpha", QUERY_VEC, {
+      limit: 10,
+      minScore: 0.1,
+    });
+    expect(filtered.length).toBe(5); // one real match silently gone
+
+    const lost = unfiltered[5]!.memory.metadata.id;
+    expect(filtered.map((r) => r.memory.metadata.id)).not.toContain(lost);
   });
 });
