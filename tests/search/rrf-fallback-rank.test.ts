@@ -21,27 +21,32 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createSearchIndex } from "../../src/search/index.ts";
+import { createDefaultConfig } from "../../src/shared/config.ts";
 import type { SearchIndex } from "../../src/search/types.ts";
 import type { MemoryConfig } from "../../src/shared/config.ts";
 import type { Memory } from "../../src/shared/types.ts";
 
 const DIMS = 384;
 
-/** Production hybrid weights, with minScore disabled so nothing is filtered. */
+/**
+ * The real production hybrid weights, read from `createDefaultConfig()` rather
+ * than copied -- if someone changes the shipped defaults, these tests move with
+ * them instead of silently guarding a weighting nobody runs. Only `minScore` is
+ * overridden, to 0, so nothing is filtered out before we can look at the order.
+ *
+ * The expected positions below are arithmetic consequences of these weights. If
+ * a defaults change turns one of these tests red, that is the test doing its
+ * job: re-derive the expectation, do not just bump the number.
+ */
+const PROD = createDefaultConfig().hybridDefaults;
+
 function makeProdConfig(sqlitePath: string): MemoryConfig {
   return {
     baseDir: "/tmp/agent-memory-rrf-test",
     sqlitePath,
     embeddingModel: "Xenova/all-MiniLM-L6-v2",
     embeddingDimensions: DIMS,
-    hybridDefaults: {
-      limit: 5,
-      minScore: 0.0,
-      weightFts: 0.4,
-      weightVector: 0.55,
-      weightRecency: 0.05,
-      rrfK: 60,
-    },
+    hybridDefaults: { ...PROD, minScore: 0.0 },
     maxCoreTokens: 4000,
   };
 }
@@ -172,7 +177,11 @@ describe("searchHybrid: RRF fallback rank", () => {
     }
   }
 
-  test("a word occurring in exactly one entry ranks that entry first", async () => {
+  // Deliberately narrow name: this shows the fix for the case the bug report
+  // was about -- a unique word in an entry that is also a reasonable vector
+  // neighbour. It is NOT a general "unique word always wins" guarantee; the
+  // last test in this file pins why that guarantee does not hold.
+  test("a unique word ranks its entry first when that entry is also a near vector neighbour", async () => {
     // 23 filler entries + 1 target = 24 entries. limit 5 -> poolSize 15, so the
     // vector pool is truncated and the old length-based fallback misfired.
     await indexFillers(23, [3]);
