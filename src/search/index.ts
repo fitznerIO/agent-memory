@@ -658,9 +658,19 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       // Collect all unique memory IDs
       const allIds = new Set<string>([...ftsRanks.keys(), ...vecRanks.keys()]);
 
-      // Max ranks for fallback (documents not found in one result set)
-      const maxFtsRank = ftsResults.length + 1;
-      const maxVecRank = vecResults.length + 1;
+      // Fallback rank for documents missing from one result set.
+      //
+      // This must NOT depend on the individual list length. The vector search
+      // always returns a full pool (it has no notion of "no match"), while FTS
+      // returns only real matches -- often a single one for a rare word. With a
+      // length-based fallback, "missing from FTS" then scored as rank 2, almost
+      // as good as an actual FTS rank 1, and every vector neighbour outranked
+      // the one exact match. The rarer the word, the deeper the true hit sank.
+      //
+      // Both channels therefore share one fallback: just past the pool. It is
+      // the correct estimate for a truncated list and the harshest penalty the
+      // pool allows for an exhausted one.
+      const missingRank = poolSize + 1;
 
       const now = Date.now();
       // Dynamic k: prevent score compression for small corpora.
@@ -693,8 +703,8 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
         const ftsEntry = ftsRanks.get(id);
         const vecEntry = vecRanks.get(id);
 
-        const rankFts = ftsEntry ? ftsEntry.rank : maxFtsRank;
-        const rankVec = vecEntry ? vecEntry.rank : maxVecRank;
+        const rankFts = ftsEntry ? ftsEntry.rank : missingRank;
+        const rankVec = vecEntry ? vecEntry.rank : missingRank;
 
         const memory = (ftsEntry?.result.memory ??
           vecEntry?.result.memory) as Memory;
