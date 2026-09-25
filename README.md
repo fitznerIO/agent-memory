@@ -51,7 +51,7 @@ Do not run the full test suite — see [Commands](#commands). Tests run per modu
   │ Memory │ │ Search │ │   Git   │ │Embedding │
   │ Store  │ │ Index  │ │ Manager │ │ Engine   │
   ├────────┤ ├────────┤ ├─────────┤ ├──────────┤
-  │ .md    │ │ FTS5   │ │isomor-  │ │MiniLM-L6 │
+  │ .md    │ │ FTS5   │ │isomor-  │ │MiniLM-L12│
   │ files  │ │sqlite- │ │phic-git │ │384 dims  │
   │ YAML   │ │vec RRF │ │         │ │local     │
   └────────┘ └────────┘ └─────────┘ └──────────┘
@@ -231,21 +231,40 @@ Hybrid search combining three signals via [Reciprocal Rank Fusion](https://plg.u
                     ┌─────────┴────────┐
                     │  Merged Results  │
                     ├──────────────────┤
-                    │  1. doc_a  0.42  │
-                    │  2. doc_b  0.38  │
-                    │  3. doc_c  0.21  │
+                    │  1. doc_a  1.00  │
+                    │  2. doc_b  0.94  │
+                    │  3. doc_d  0.04  │
+                    │  4. doc_c  0.00  │
                     └──────────────────┘
 ```
 
-Default weights: FTS 0.3 / Vector 0.5 / Recency 0.2 (configurable).
+Default weights: FTS 0.4 / Vector 0.55 / Recency 0.05 (`src/shared/config.ts`, configurable).
+The merged scores above are what these weights give at `limit 5` (k = 3, substitute
+rank 16, equal recency), after min-max normalisation.
 
 A document found by only one of the two channels still needs a rank for the other
 one. That substitute rank is `poolSize + 1` (`poolSize = limit * 3`) for both
 channels — deliberately not the length of the individual result list. The vector
 search has no notion of "no match", so it fills the pool whenever enough vectors
-are indexed; full-text search returns only real matches. A length-based substitute
-therefore made "missing from full-text" score almost as well as an actual full-text
-rank 1 whenever the query was rare, and buried exact matches.
+are indexed; full-text search returns only entries whose words or word stems match.
+A length-based substitute therefore made "missing from full-text" score almost as
+well as an actual full-text rank 1 whenever the query was rare, and buried exact
+matches. The substitute changes results whenever a list is shorter than the pool;
+in a fully embedded store, entries that match the query words can only move up.
+
+**What the score means.** Scores are min-max normalised within one response: the
+best candidate is always `1.0` and the worst `0.0`, even when nothing matches well.
+A score orders the results of one search; it is not a relevance measure and cannot
+be compared across searches. `minScore` filters on this normalised value, so it can
+drop the weakest real match (#9). The CLI's `search` passes `minScore 0.3` unless
+`--min-score` is given; the config default of `0.1` applies to library calls.
+
+**`limit` is part of the ranking**, not just the length of the answer: it sets the
+candidate pool (`limit * 3`), the RRF constant `k` (capped at `poolSize / 4`) and the
+substitute rank. The same query can order its top results differently at
+`--limit 5` and `--limit 30`, and a search with `--tags` or `--connected-to` (which
+fetches `limit * 5` candidates before filtering) can order shared hits differently
+from one without.
 
 ### Git Manager
 
@@ -267,7 +286,7 @@ Local-only embeddings, no API calls:
 
 | Property     | Value                    |
 |-------------|--------------------------|
-| Model       | `Xenova/all-MiniLM-L6-v2` |
+| Model       | `Xenova/paraphrase-multilingual-MiniLM-L12-v2` |
 | Dimensions  | 384                      |
 | Pooling     | Mean                     |
 | Normalization | L2                     |
@@ -373,7 +392,7 @@ Global flags:
     {
       "content": "User prefers TypeScript over JavaScript",
       "source": "semantic/abc123.md",
-      "score": 0.42,
+      "score": 1,
       "type": "semantic",
       "lastAccessed": "2025-01-15T10:30:00.000Z",
       "storeSource": "project"
@@ -576,7 +595,7 @@ import type {
            ▼                                  ▼
   ┌───────────────────┐  embed  ┌───────────────────┐
   │ Embedding Engine  │────────▶│ Search Index      │
-  │ (MiniLM-L6)      │  384d   │ (SQLite)          │
+  │ (MiniLM-L12)      │  384d   │ (SQLite)          │
   └───────────────────┘ vector  │  ├ memories table │
                                 │  ├ knowledge table│
                                 │  ├ connections    │
@@ -627,17 +646,17 @@ All settings flow through `MemoryConfig`:
 
 ```typescript
 {
-  baseDir: "~/.agent-memory",           // Root directory for all files
-  sqlitePath: "~/.agent-memory/.index/search.sqlite",
-  embeddingModel: "Xenova/all-MiniLM-L6-v2",
+  baseDir: "<project root>/.agent-memory", // Found from the working directory (.git / package.json)
+  sqlitePath: "<project root>/.agent-memory/.index/search.sqlite",
+  embeddingModel: "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
   embeddingDimensions: 384,
   hybridDefaults: {
     limit: 5,                           // Max results
-    minScore: 0.3,                      // Minimum RRF score
-    weightFts: 0.3,                     // BM25 weight
-    weightVector: 0.5,                  // Cosine similarity weight
-    weightRecency: 0.2,                 // Recency boost weight
-    rrfK: 60,                           // RRF smoothing constant
+    minScore: 0.1,                      // Minimum normalised score (the CLI's search passes 0.3)
+    weightFts: 0.4,                     // BM25 weight
+    weightVector: 0.55,                 // Cosine similarity weight
+    weightRecency: 0.05,                // Recency boost weight
+    rrfK: 60,                           // RRF constant, capped at poolSize / 4
   },
   maxCoreTokens: 4000,                  // Budget for core memories
 }

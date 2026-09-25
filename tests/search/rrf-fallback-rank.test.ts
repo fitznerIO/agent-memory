@@ -3,18 +3,19 @@
  *
  * Bug: the fallback rank for "this document is missing from that result set"
  * was derived from the length of the result set (`results.length + 1`). The
- * vector search always returns a full pool, FTS only real matches -- so for a
- * rare word FTS returned a single row and "missing from FTS" scored as rank 2,
- * almost as good as an actual FTS rank 1. Every vector neighbour then outranked
- * the one exact match. In a real 433-entry store the only entry containing
- * "netcup" came back at position 93.
+ * vector search fills the pool whenever enough vectors are indexed, FTS returns
+ * only matching entries -- so for a rare word FTS returned a single row and
+ * "missing from FTS" scored as rank 2, almost as good as an actual FTS rank 1.
+ * Most vector neighbours then outranked the one exact match; in a real store it
+ * came back far down the list (see #7 for the measurement).
  *
  * Fix: both channels share one length-independent fallback, `poolSize + 1`.
  *
  * These tests use the PRODUCTION weights from `createDefaultConfig()`, not the
  * lighter ones the other search tests use -- the bug lives in the interplay of
  * weightFts, weightVector and the fallback, so testing other weights would test
- * a different system.
+ * a different system. The one exception is the symmetry test, which uses equal
+ * weights on purpose (its comment says why).
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -180,7 +181,7 @@ describe("searchHybrid: RRF fallback rank", () => {
   // Deliberately narrow name: this shows the fix for the case the bug report
   // was about -- a unique word in an entry that is also a reasonable vector
   // neighbour. It is NOT a general "unique word always wins" guarantee; the
-  // last test in this file pins why that guarantee does not hold.
+  // "position 3, not position 1" test below pins why that guarantee does not hold.
   test("a unique word ranks its entry first when that entry is also a near vector neighbour", async () => {
     // 23 filler entries + 1 target = 24 entries. limit 5 -> poolSize 15, so the
     // vector pool is truncated and the old length-based fallback misfired.
@@ -248,10 +249,10 @@ describe("searchHybrid: RRF fallback rank", () => {
    *
    * So: six embedded fillers and one entry with no embedding at all. The vector
    * pool is 15 deep and only six entries can fill it. A partly-embedded store is
-   * a real state, not a contrived one -- `rebuild()` drops the embeddings
-   * entirely (see the note at src/search/index.ts around "Total embeddings will
-   * be 0 after rebuild"), and re-embedding fills them back in over time. Now the
-   * two fallbacks are different numbers and the assertion can see them.
+   * a real state: `rebuildIndex()` indexes an entry without a vector when
+   * embedding it fails (src/index.ts, "Best-effort: skip files that fail to
+   * embed"). Now the two fallbacks are different numbers and the assertion can
+   * see them.
    *
    * With k = 3 and missingRank = 16:
    *   fts-only  (full-text rank 1, no vector row) = 0.5/4  + 0.5/19 = 0.151316
@@ -262,6 +263,17 @@ describe("searchHybrid: RRF fallback rank", () => {
    *
    * Revert the vector side alone and fts-only becomes 0.5/4 + 0.5/10 = 0.175,
    * which breaks the tie. That mutation is what this test exists to catch.
+   *
+   * Equal weights cannot see a fallback that is symmetric but still depends on
+   * the list lengths, e.g. `max(ftsResults.length, vecResults.length) + 1` = 7
+   * here: both sides move together and the tie survives. So the same corpus is
+   * searched once more at the production weights, where the fallback's size
+   * decides fts-only's position:
+   *   fallback 16 (fix):   fts-only 0.4/4 + 0.55/19 = 0.1289, behind
+   *                        filler-0 0.4/19 + 0.55/4 = 0.1586 and
+   *                        filler-1 0.4/19 + 0.55/5 = 0.1311  -> position 3
+   *   fallback 7 (max+1):  fts-only 0.4/4 + 0.55/10 = 0.1550, ahead of
+   *                        filler-1 0.4/10 + 0.55/5 = 0.1500  -> position 2
    */
   test("both channels use the same fallback rank, even when the vector pool is not full", async () => {
     for (let i = 0; i < 6; i++) {
@@ -301,6 +313,10 @@ describe("searchHybrid: RRF fallback rank", () => {
     // And they really are the top two, i.e. something below them anchors the
     // normalisation -- otherwise the equality above would be trivially true.
     expect(results[2]!.score).toBeLessThan(results[0]!.score);
+
+    // Same corpus at the production weights: the fallback's size shows.
+    const prod = await idx.searchHybrid("netcup", QUERY_VEC, { limit: 5 });
+    expect(prod.findIndex((r) => r.memory.metadata.id === "fts-only")).toBe(2);
   });
 
   /**
@@ -343,20 +359,17 @@ describe("searchHybrid: RRF fallback rank", () => {
 
   /**
    * The fallback is `poolSize + 1`, and `poolSize` is `limit * 3` -- so how much
-   * this fix helps depends on the limit. At a small limit the vector pool is too
-   * shallow for the exact hit to be rescued at all.
-   *
-   * This matters beyond search: `forget` (src/index.ts) runs searchHybrid at
-   * `limit: 1` for `--scope entry` and `limit: 10` for a topic, then DELETES
-   * every result. At limit 1 the pool is 3 deep, k = 1 and the fallback is 4:
+   * this fix helps depends on the limit and on where the entry sits in the vector
+   * ranking. This test pins one setup: the entry with the word at vector rank 4.
+   * At limit 1 the pool is 3 deep, k = 1 and the fallback is 4:
    *
    *   target (FTS rank 1, outside a 3-deep pool) = 0.4/2 + 0.55/5  = 0.31000
    *   filler at vector rank 1, no word match     = 0.4/5 + 0.55/2  = 0.35500
    *
-   * The entry containing the word loses, and `forget --scope entry` deletes a
-   * file that does not contain the search word. This test pins that floor rather
-   * than hiding it. Fixing it means changing how poolSize is derived, which is
-   * outside this change.
+   * so it is not returned. That is not a general "limit 1 does not help": an
+   * entry at vector rank 2 is not returned by the old code at limit 1 and comes
+   * first with the fix. (`forget --scope entry` used to search at limit 1, which
+   * is one reason it could delete the wrong entry -- #8.)
    *
    * A second thing this pins: every other test in this file runs at limit 5, so a
    * fallback accidentally hard-coded to a constant would pass them all. Here the
@@ -365,7 +378,7 @@ describe("searchHybrid: RRF fallback rank", () => {
    * constant on its own (9 also satisfies these positions); the position-3 test
    * above catches that one. The two together close the gap.
    */
-  test("how much the fix helps depends on the limit, and at limit 1 it does not help at all", async () => {
+  test("how much the fix helps depends on the limit: an entry at vector rank 4 is not rescued at limit 1", async () => {
     await indexFillers(23, [3]);
     await idx.index(
       makeMemory(
@@ -395,8 +408,9 @@ describe("searchHybrid: RRF fallback rank", () => {
   });
 
   /**
-   * SILENT FAILURE from the briefing's own list, proven here:
-   * "minScore, das nach der Min-Max-Normalisierung echte Treffer wegfiltert".
+   * SILENT FAILURE, pinned deliberately (#9, item 2): minScore drops real
+   * matches after min-max normalisation. If this is fixed, this test SHOULD go
+   * red -- flip the expectations, do not delete the test.
    *
    * searchHybrid normalises scores min-max across the whole candidate pool. Once
    * there are at least two candidates with different scores, the worst one ends
@@ -410,8 +424,8 @@ describe("searchHybrid: RRF fallback rank", () => {
    * back. One is missing.
    *
    * Note the production default is worse than it looks: the config ships
-   * minScore 0.1, but src/index.ts:547 passes `input.minScore ?? 0.3` -- so the
-   * real cut is at 0.3, not 0.1.
+   * minScore 0.1, but `search()` in src/index.ts passes `input.minScore ?? 0.3`
+   * -- so the real cut is at 0.3, not 0.1.
    */
   test("minScore drops a real word match, because min-max normalisation puts the worst candidate at exactly 0", async () => {
     // Six entries, every one of them containing "alpha".
