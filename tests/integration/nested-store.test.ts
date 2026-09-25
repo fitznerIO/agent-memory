@@ -118,6 +118,7 @@ describe("nested stores (#10)", () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("inside the store");
+    expect(result.stdout).toBe("");
     expect(existsSync(join(store, "semantic", ".agent-memory"))).toBe(false);
   });
 
@@ -140,6 +141,23 @@ describe("nested stores (#10)", () => {
     expect(existsSync(inner)).toBe(false);
   });
 
+  // migrate resolves its store path itself and never goes through initSystem, so it has its own
+  // check; this is the only thing guarding that path.
+  test("migrate refuses --project-dir pointing into a store", () => {
+    const result = runCli(project, [
+      "migrate",
+      "--step",
+      "split-files",
+      "--project-dir",
+      join(store, "semantic"),
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("inside the store");
+    expect(result.stdout).toBe("");
+    expect(existsSync(join(store, "semantic", ".agent-memory"))).toBe(false);
+  });
+
   // Every place the CLI would write is checked, not only the project store.
   describe("from a normal project, pointing another write path into a store", () => {
     let other: string;
@@ -160,6 +178,7 @@ describe("nested stores (#10)", () => {
       ]);
       expect(result.exitCode).toBe(1);
       expect(result.stderr).toContain("inside the store");
+      expect(result.stdout).toBe("");
       expect(existsSync(join(store, "child"))).toBe(false);
     });
 
@@ -174,6 +193,7 @@ describe("nested stores (#10)", () => {
       ]);
       expect(result.exitCode).toBe(1);
       expect(result.stderr).toContain("inside the store");
+      expect(result.stdout).toBe("");
       expect(existsSync(join(store, "child"))).toBe(false);
     });
   });
