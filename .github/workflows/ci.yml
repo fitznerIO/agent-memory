@@ -18,6 +18,23 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      # The embedding model (~470 MB) is downloaded on first use. On a fresh runner that first use
+      # was inside a test with bun's 5 s timeout: the test timed out mid-download, and the half-
+      # written model file then failed every later test with "Protobuf parsing failed". So the
+      # model comes from the cache, or is downloaded once, completely, before any test runs. The
+      # prefetch uses the app's own engine and config, so the model name lives in one place.
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: node_modules/@huggingface/transformers/.cache
+          key: hf-model-${{ runner.os }}-${{ hashFiles('bun.lock', 'src/shared/config.ts') }}
+
+      - name: Prefetch embedding model
+        run: >-
+          bun -e 'import { createEmbeddingEngine } from "./src/embedding/engine.ts";
+          import { createDefaultConfig } from "./src/shared/config.ts";
+          await createEmbeddingEngine(createDefaultConfig()).embed("warm-up");'
+
       - name: Typecheck
         run: bun run typecheck
 
