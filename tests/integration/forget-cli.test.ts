@@ -3,7 +3,8 @@
  *
  * forget() treats every scope other than exactly "entry" as "topic", so `--scope Entry` or a bare
  * `--scope` deleted up to ten entries instead of one. A bare `--query` (an empty shell variable)
- * became the query "true". Nothing is deleted in any of these calls.
+ * became the query "true". Nothing is deleted in any of these calls. A later `--query` with a value
+ * still counts.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
@@ -54,4 +55,17 @@ describe("forget: CLI input checks (#8)", () => {
       TEST_TIMEOUT,
     );
   }
+
+  test(
+    "a later --query with a value wins over an earlier bare one",
+    () => {
+      const result = run(["--query", "--query", "soup", "--confirm"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).not.toContain("Missing value");
+      expect(JSON.parse(result.stdout).message).toBe(
+        'No entry contains "soup". Nothing was forgotten.',
+      );
+    },
+    TEST_TIMEOUT,
+  );
 });
