@@ -69,8 +69,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deletes nothing and says so. A query that is one entry id (`dec-012`, `note 130`,
   `DEC‑012`, `note #130`, a UUID; case, any spaces or punctuation between prefix
   and number, and surrounding punctuation ignored) deletes exactly that entry, or
-  nothing; a query with ids in a list or a sentence is refused — as text it
-  matched exactly the entries citing those ids. The CLI rejects a `--scope` other
+  nothing — also `session 3`, even if an entry contains those words; a query with
+  ids in a list or a sentence is refused — as text it matched exactly the entries
+  citing those ids. The CLI rejects a `--scope` other
   than `entry`/`topic` and a `--query` without a value.
 - **Search no longer crashes on hyphenated queries.** `sanitizeFtsQuery` used a
   split regex (`/\b(\w+)-(\w+)\b/g`) that missed chained hyphens and non-ASCII
