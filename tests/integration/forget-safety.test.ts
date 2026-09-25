@@ -258,7 +258,7 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
   // through to the word rule turned "dec-001" into "dec" + "001", so a retry after the entry was
   // gone deleted every entry that merely cited it.
   test(
-    "id-shaped queries: case, brackets, spaces and dash variants are ignored; a retry or a near miss deletes nothing",
+    "id-shaped queries: case, brackets and any separator are ignored; a retry or a near miss deletes nothing",
     async () => {
       const dec1 = await system.memoryStore({
         title: "Hosting decision",
@@ -374,6 +374,33 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
         confirm: true,
       });
       expect(result.forgotten).toEqual([entry.file_path]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  // When several entries contain the phrase, the hybrid ranking picks the one to delete. The dog
+  // entry says "hot" and "dog" more often in fewer words, so full-text search ranks it first; the
+  // snack entry is closer in meaning to "hot dog" (cosine 0.82 against 0.60), and hybrid ranks it
+  // first. Taking the matches in full-text order would delete the dog entry.
+  test(
+    "with several matches, --scope entry deletes the best match by meaning, not the first full-text hit",
+    async () => {
+      const dog = "Our dog was hot, a hot dog pants, so the dog stays in the shade";
+      const snack = "Lunch from the street stand: a hot dog in a soft bun with mustard";
+      for (const content of [dog, snack]) {
+        await system.note({ content, type: "semantic", importance: "low" });
+      }
+
+      const result = await system.forget({
+        query: "hot dog",
+        scope: "entry",
+        confirm: true,
+      });
+
+      expect(result.forgotten).toHaveLength(1);
+      const left = entryContents(tempDir);
+      expect(left.some((c) => c.includes(snack))).toBe(false);
+      expect(left.some((c) => c.includes(dog))).toBe(true);
     },
     TEST_TIMEOUT,
   );
