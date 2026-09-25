@@ -58,11 +58,12 @@ describe("numeric CLI flags (#9)", () => {
   );
 
   test(
-    "valid values still work (whole number, 0 and 1 as min-score bounds)",
+    "valid values still work (limit 1 to 200, min-score 0 and 1)",
     () => {
       for (const args of [
         ["--limit", "3", "--min-score", "0"],
         ["--limit", "5.0", "--min-score", "1"],
+        ["--limit", "200"],
       ]) {
         const result = run(["search", "--query", "anything", ...args]);
         expect(result.exitCode).toBe(0);
@@ -77,8 +78,9 @@ describe("numeric CLI flags (#9)", () => {
     ["--limit", "abc", "Invalid --limit: abc"],
     ["--limit", "0", "Invalid --limit: 0"],
     ["--limit", "2.5", "Invalid --limit: 2.5"],
-    // Above 200: with a tag filter the vector search would ask sqlite-vec for more than its
-    // 4096 neighbours and fail with "k value in knn query too large".
+    // Above the cap of 200. From 274 on, a tag filter would make the vector search ask
+    // sqlite-vec for more than its 4096 neighbours ("k value in knn query too large").
+    ["--limit", "201", "Invalid --limit: 201"],
     ["--limit", "274", "Invalid --limit: 274"],
     ["--min-score", "1.5", "Invalid --min-score: 1.5"],
     ["--min-score", "x", "Invalid --min-score: x"],
