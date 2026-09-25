@@ -99,6 +99,72 @@ describe("CLI output after a write (#12)", () => {
   );
 
   test(
+    "connect --quiet: one line naming both ends",
+    () => {
+      const result = run([
+        "connect",
+        "--source",
+        "dec-001",
+        "--target",
+        "dec-002",
+        "--quiet",
+      ]);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("connected dec-001 -> dec-002 (related)\n");
+      expect(result.stderr).toBe("");
+    },
+    TEST_TIMEOUT,
+  );
+
+  test(
+    "update --quiet on a note: one line with the path",
+    () => {
+      run(["note", "--content", "Quiet update target xylophonic"]);
+      const found = JSON.parse(
+        run(["search", "--query", "xylophonic", "--limit", "1"]).stdout,
+      );
+      const path = found.results[0].source as string;
+
+      const result = run([
+        "update",
+        "--path",
+        path,
+        "--content",
+        "Quiet update target xylophonic, edited",
+        "--reason",
+        "test",
+        "--quiet",
+      ]);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe(`updated ${path}\n`);
+    },
+    TEST_TIMEOUT,
+  );
+
+  // Pins today's behaviour of #14 (update does not re-index an entry created by `store`): --quiet
+  // must say so instead of hiding it. When #14 is fixed this becomes the plain "updated" line.
+  test(
+    "update --quiet says when the search index was not updated",
+    () => {
+      const result = run([
+        "update",
+        "--path",
+        "semantic/decisions/dec-002-second-deploy-decision.md",
+        "--content",
+        "Deploys run from the main branch only, edited",
+        "--reason",
+        "test",
+        "--quiet",
+      ]);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe(
+        "updated semantic/decisions/dec-002-second-deploy-decision.md (file written, search index NOT updated)\n",
+      );
+    },
+    TEST_TIMEOUT,
+  );
+
+  test(
     "note --quiet: one line with the id",
     () => {
       const result = run(["note", "--content", "Quiet note", "--quiet"]);

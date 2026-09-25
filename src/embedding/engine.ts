@@ -9,10 +9,12 @@ export function createEmbeddingEngine(config: MemoryConfig): EmbeddingEngine {
 
   const initialize = async (): Promise<void> => {
     if (ready) return;
-    // fp32 is what the library picks on CPU anyway (same vectors, checked). Saying so explicitly
-    // silences its "dtype not specified" warning, which every CLI call printed to stderr.
+    // "auto" is what the library does when no dtype is given — the model's own configured dtype,
+    // else the device default (fp32 on CPU) — minus the "dtype not specified" warning that every
+    // CLI call printed to stderr. Same vectors (checked). A fixed "fp32" would override a model
+    // that ships its own dtype setting.
     pipe = await pipeline("feature-extraction", config.embeddingModel, {
-      dtype: "fp32",
+      dtype: "auto",
     });
     ready = true;
   };

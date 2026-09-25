@@ -19,8 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **No more `dtype not specified` warning on every call** (#12). The embedding
-  pipeline is now created with `dtype: "fp32"` — what the library chose on CPU
-  anyway, so the vectors are identical (checked) and stored indexes stay valid.
+  pipeline is now created with `dtype: "auto"` — exactly what the library does
+  without a dtype (the model's own setting, else fp32 on CPU), minus the warning.
+  The vectors are identical (checked) and stored indexes stay valid.
 - **`relevance` in `suggested_connections` is rounded to three decimals.**
 
 - **Search no longer crashes on hyphenated queries.** `sanitizeFtsQuery` used a
