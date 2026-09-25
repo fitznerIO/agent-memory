@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { buildExtensionDispatch } from "./extensions/tool-registry.ts";
 import { createMemorySystem } from "./index.ts";
 import type { MemorySystem } from "./index.ts";
 import { migrateDiscoverConnections } from "./migration/discover-connections.ts";
 import { migrateNamespaceTags } from "./migration/namespace-tags.ts";
 import { migrateSplitFiles } from "./migration/split-files.ts";
-import { findProjectRoot } from "./shared/config.ts";
+import { findEnclosingStore, findProjectRoot } from "./shared/config.ts";
 
 function parseArgs(argv: string[]): {
   command: string;
@@ -109,6 +109,20 @@ function report(
   console.log(quiet ? quietLine : JSON.stringify(result, null, 2));
 }
 
+/**
+ * Stop before a store inside another store is opened (or created). From inside
+ * `<proj>/.agent-memory/…` the project-root walk stops at the store's own `.git` and picks
+ * `<proj>/.agent-memory/.agent-memory`; writes then succeeded into a store nothing else reads.
+ */
+function refuseNestedStore(storeDir: string): void {
+  const enclosing = findEnclosingStore(storeDir);
+  if (!enclosing) return;
+  console.error(
+    `[agent-memory] Refusing to run: the store would be ${storeDir}, which is inside the store at ${enclosing}. That would create a separate store that nothing else reads. Run the command from the project root (${dirname(enclosing)}) or pass --project-dir with the project root.`,
+  );
+  process.exit(1);
+}
+
 async function initSystem(
   flags: Record<string, string>,
 ): Promise<MemorySystem> {
@@ -142,6 +156,7 @@ async function initSystem(
   // store that simply had no match. The warning goes to stderr so stdout stays parseable JSON.
   const projectDir =
     (overrides.baseDir as string | undefined) ?? findProjectRoot(process.cwd());
+  refuseNestedStore(projectDir);
   if (!existsSync(projectDir)) {
     console.error(
       `[agent-memory] No memory store at ${projectDir} — a new, empty one will be created. If you expected existing memories, the working directory or --project-dir points elsewhere.`,
@@ -207,6 +222,7 @@ Examples:
     const baseDir = flags["project-dir"]
       ? join(flags["project-dir"], ".agent-memory")
       : findProjectRoot(process.cwd());
+    refuseNestedStore(baseDir);
 
     switch (step) {
       case "split-files": {
