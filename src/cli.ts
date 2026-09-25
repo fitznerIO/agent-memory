@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { buildExtensionDispatch } from "./extensions/tool-registry.ts";
 import { createMemorySystem } from "./index.ts";
 import type { MemorySystem } from "./index.ts";
@@ -118,7 +118,7 @@ function refuseNestedStore(what: string, storeDir: string): void {
   const enclosing = findEnclosingStore(storeDir);
   if (!enclosing) return;
   console.error(
-    `[agent-memory] Refusing to run: the ${what} would be ${storeDir}, which is inside the store at ${enclosing}. That would create a separate store that nothing else reads. Run the command from the project root (${dirname(enclosing)}) or pass --project-dir with the project root.`,
+    `[agent-memory] Refusing to run: the ${what} would be ${resolve(storeDir)}, which is inside the store at ${enclosing}. That would create a separate store that nothing else reads. Run the command from the project root (${dirname(enclosing)}) or pass --project-dir with the project root.`,
   );
   process.exit(1);
 }

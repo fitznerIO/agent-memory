@@ -121,6 +121,25 @@ describe("nested stores (#10)", () => {
     expect(existsSync(join(store, "semantic", ".agent-memory"))).toBe(false);
   });
 
+  // --base-dir moves only the store, not its index (that stays derived from the working
+  // directory), so this is the one case where the store check alone has to catch it.
+  test("the CLI refuses --base-dir pointing into a store", () => {
+    const inner = join(store, "semantic", "inner");
+    const result = runCli(project, [
+      "note",
+      "--content",
+      "x",
+      "--base-dir",
+      inner,
+      "--no-global",
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(`the store would be ${inner}`);
+    expect(result.stdout).toBe("");
+    expect(existsSync(inner)).toBe(false);
+  });
+
   // Every place the CLI would write is checked, not only the project store.
   describe("from a normal project, pointing another write path into a store", () => {
     let other: string;

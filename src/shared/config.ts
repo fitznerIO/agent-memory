@@ -44,8 +44,9 @@ export function findProjectRoot(cwd: string): string {
  * else ever reads.
  *
  * Symlinks are resolved first, so a path that reaches a store through a link is caught too.
- * Not recognised: a store with a custom name whose index lives elsewhere (`--base-dir` plus an
- * external `--sqlite-path`) — it carries neither marker `isStore()` looks for.
+ * Not recognised: a store at a custom `--base-dir`. `--base-dir` alone does not move the index —
+ * it stays in the store of the project the command runs from — so the custom folder holds only its
+ * `.git`, and a folder not named `.agent-memory` needs an index to count (see `isStore()`).
  */
 export function findEnclosingStore(storeDir: string): string | null {
   let dir = dirname(realPath(storeDir));
