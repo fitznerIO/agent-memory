@@ -10,6 +10,9 @@ import { migrateNamespaceTags } from "./migration/namespace-tags.ts";
 import { migrateSplitFiles } from "./migration/split-files.ts";
 import { findEnclosingStore, findProjectRoot } from "./shared/config.ts";
 
+/** Flags given without a value; parseArgs stores them as "true". */
+const valuelessFlags = new Set<string>();
+
 function parseArgs(argv: string[]): {
   command: string;
   positionals: string[];
@@ -30,6 +33,7 @@ function parseArgs(argv: string[]): {
       } else {
         // Boolean flag (e.g. --confirm, --global, --no-global)
         flags[key] = "true";
+        valuelessFlags.add(key);
       }
     } else {
       // Bare positional (e.g. `extensions install billing`).
@@ -85,6 +89,11 @@ function requireFlag(flags: Record<string, string>, name: string): string {
   const value = flags[name];
   if (!value) {
     console.error(`Missing required flag: --${name}`);
+    process.exit(1);
+  }
+  // `forget --query --confirm` (an empty shell variable) used to search for the word "true".
+  if (valuelessFlags.has(name)) {
+    console.error(`Missing value for --${name}`);
     process.exit(1);
   }
   return value;
@@ -345,9 +354,18 @@ Examples:
       }
 
       case "forget": {
+        // Reject anything but entry/topic: forget() treats every scope other than exactly "entry"
+        // as topic, so "--scope Entry" or a bare "--scope" deleted up to ten entries instead of one.
+        const scope = flags.scope ?? "entry";
+        if (scope !== "entry" && scope !== "topic") {
+          console.error(
+            `Invalid --scope: ${scope} (expected "entry" or "topic")`,
+          );
+          process.exit(1);
+        }
         const result = await system.forget({
           query: requireFlag(flags, "query"),
-          scope: (flags.scope ?? "entry") as "entry" | "topic",
+          scope,
           confirm: flags.confirm === "true",
         });
         console.log(JSON.stringify(result, null, 2));
