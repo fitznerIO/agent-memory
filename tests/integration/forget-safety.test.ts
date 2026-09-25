@@ -318,6 +318,7 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
         "dec#003",
         "dec-1",
         "decision-001",
+        "decision‑001", // no registered prefix: only the dash folding makes this an id
         "dec-2",
       ]) {
         for (const scope of ["entry", "topic"] as const) {
