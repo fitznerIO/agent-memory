@@ -9,7 +9,11 @@ export function createEmbeddingEngine(config: MemoryConfig): EmbeddingEngine {
 
   const initialize = async (): Promise<void> => {
     if (ready) return;
-    pipe = await pipeline("feature-extraction", config.embeddingModel);
+    // fp32 is what the library picks on CPU anyway (same vectors, checked). Saying so explicitly
+    // silences its "dtype not specified" warning, which every CLI call printed to stderr.
+    pipe = await pipeline("feature-extraction", config.embeddingModel, {
+      dtype: "fp32",
+    });
     ready = true;
   };
 

@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--quiet` for `note`, `store`, `update` and `connect`** (#12): one line instead
+  of JSON, e.g. `stored dec-012 semantic/decisions/dec-012-….md`. On a real store
+  a plain `store` answers with about 400 lines, almost all of them
+  `existing_tags`; an agent took such a successful call for a failure. A result
+  with `success: false` is still printed in full, and `update` says when the
+  search index was not updated.
+
 ### Fixed
+
+- **No more `dtype not specified` warning on every call** (#12). The embedding
+  pipeline is now created with `dtype: "fp32"` — what the library chose on CPU
+  anyway, so the vectors are identical (checked) and stored indexes stay valid.
+- **`relevance` in `suggested_connections` is rounded to three decimals.**
 
 - **Search no longer crashes on hyphenated queries.** `sanitizeFtsQuery` used a
   split regex (`/\b(\w+)-(\w+)\b/g`) that missed chained hyphens and non-ASCII
