@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `existing_tags`; an agent took such a successful call for a failure. A result
   with `success: false` is still printed in full, and `update` says when the
   search index was not updated.
+- **The CLI warns when it is about to create an empty store.** Running from the
+  wrong working directory used to build a fresh, empty store in silence — every
+  search then came back with nothing, indistinguishable from a store without a
+  match. The warning goes to stderr, so stdout stays parseable JSON.
 
 ### Fixed
 
@@ -42,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (ordinal within one response, not a relevance measure; also on
   `MemorySearchOutput.score`), that `limit` is part of the ranking, the real default
   weights, model and `minScore`, and an RRF example that can actually occur.
+- **The CLI refuses to create a store inside a store** (#10). A store has its own
+  `.git`, so the project-root walk from anywhere inside `<proj>/.agent-memory/…`
+  stopped at the store itself and used `<proj>/.agent-memory/.agent-memory` — a
+  new, empty store that nothing else reads, while `note` and `store` reported
+  success. Every command that opens a store now stops with exit code 1 and a
+  message naming the enclosing store and the project root, and creates nothing.
+  Every write location is checked — the project store (also via `--project-dir` /
+  `--base-dir`), the search index (`--sqlite-path`) and the global store
+  (`--global-dir`) — with symlinks resolved.
 - **Search no longer crashes on hyphenated queries.** `sanitizeFtsQuery` used a
   split regex (`/\b(\w+)-(\w+)\b/g`) that missed chained hyphens and non-ASCII
   words, so `"2026-08-27"` and `"NEUSTART-ÜBERGABE"` reached FTS5 with a hyphen
@@ -65,13 +78,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An unknown `--mode` is rejected** instead of falling back to `replace`. The
   flag decides whether the existing body survives; a typo used to overwrite it
   without a word.
-
-### Added
-
-- **The CLI warns when it is about to create an empty store.** Running from the
-  wrong working directory used to build a fresh, empty store in silence — every
-  search then came back with nothing, indistinguishable from a store without a
-  match. The warning goes to stderr, so stdout stays parseable JSON.
 
 ## [0.3.0] — 2026-06-01
 

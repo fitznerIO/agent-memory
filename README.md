@@ -420,6 +420,12 @@ Use `/memory` in Claude Code to invoke it manually, or let Claude trigger it aut
 
 Memories are stored **per project** in `.agent-memory/` at the project root. The project root is auto-detected by walking up from `cwd` looking for `.git/` or `package.json`.
 
+The store has its own `.git/`, so from *inside* `.agent-memory/` that walk would stop at the store
+itself and pick `.agent-memory/.agent-memory/`. The CLI refuses that: if the project store, its
+search index or the global store would lie inside another store, it exits with code 1, names the
+enclosing store and the project root, and creates nothing. Run it from the project root or pass
+`--project-dir`.
+
 ```
 my-project/
 ├── .git/                     Project repo
