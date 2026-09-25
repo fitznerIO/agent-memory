@@ -49,6 +49,7 @@ function numberFlag(
   flags: Record<string, string>,
   name: string,
   kind: "positive-int" | "score",
+  max?: number,
 ): number | undefined {
   const raw = flags[name];
   if (raw === undefined) return undefined;
@@ -56,16 +57,29 @@ function numberFlag(
   const value = raw.trim() === "" ? Number.NaN : Number(raw);
   const ok =
     kind === "positive-int"
-      ? Number.isInteger(value) && value > 0
+      ? Number.isInteger(value) &&
+        value > 0 &&
+        (max === undefined || value <= max)
       : Number.isFinite(value) && value >= 0 && value <= 1;
   if (!ok) {
-    console.error(
-      `Invalid --${name}: ${raw} (expected ${kind === "positive-int" ? "a whole number above 0" : "a number from 0 to 1"})`,
-    );
+    const expected =
+      kind === "score"
+        ? "a number from 0 to 1"
+        : max === undefined
+          ? "a whole number above 0"
+          : `a whole number from 1 to ${max}`;
+    console.error(`Invalid --${name}: ${raw} (expected ${expected})`);
     process.exit(1);
   }
   return value;
 }
+
+/**
+ * sqlite-vec returns at most 4096 nearest neighbours. search() fetches limit × 5 candidates when a
+ * tag or connection filter is set, and searchHybrid pools 3 × that, so limit × 15 must stay below
+ * 4096 (273 at most). 200 leaves room and is a round number to remember.
+ */
+const MAX_SEARCH_LIMIT = 200;
 
 function requireFlag(flags: Record<string, string>, name: string): string {
   const value = flags[name];
@@ -247,7 +261,7 @@ Examples:
       case "search": {
         const result = await system.search({
           query: requireFlag(flags, "query"),
-          limit: numberFlag(flags, "limit", "positive-int"),
+          limit: numberFlag(flags, "limit", "positive-int", MAX_SEARCH_LIMIT),
           minScore: numberFlag(flags, "min-score", "score"),
           tags: flags.tags
             ? flags.tags.split(",").map((t) => t.trim())

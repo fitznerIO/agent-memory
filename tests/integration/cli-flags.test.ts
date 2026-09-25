@@ -35,6 +35,18 @@ describe("numeric CLI flags (#9)", () => {
   });
 
   test(
+    "traverse --depth 0 is rejected",
+    () => {
+      const result = run(["traverse", "--start", "dec-001", "--depth", "0"]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain(
+        "Invalid --depth: 0 (expected a whole number above 0)",
+      );
+    },
+    TEST_TIMEOUT,
+  );
+
+  test(
     "a flag given without a value is rejected too",
     () => {
       // parseArgs turns a trailing flag without a value into the string "true".
@@ -61,10 +73,13 @@ describe("numeric CLI flags (#9)", () => {
   );
 
   for (const [flag, value, expected] of [
-    ["--limit", "-1", "Invalid --limit: -1"],
+    ["--limit", "-1", "Invalid --limit: -1 (expected a whole number from 1 to 200)"],
     ["--limit", "abc", "Invalid --limit: abc"],
     ["--limit", "0", "Invalid --limit: 0"],
     ["--limit", "2.5", "Invalid --limit: 2.5"],
+    // Above 200: with a tag filter the vector search would ask sqlite-vec for more than its
+    // 4096 neighbours and fail with "k value in knn query too large".
+    ["--limit", "274", "Invalid --limit: 274"],
     ["--min-score", "1.5", "Invalid --min-score: 1.5"],
     ["--min-score", "x", "Invalid --min-score: x"],
     ["--min-score", "", "Invalid --min-score: "],
