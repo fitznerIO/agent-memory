@@ -40,6 +40,32 @@ function parseArgs(argv: string[]): {
   return { command: command ?? "", positionals, flags };
 }
 
+/**
+ * A numeric flag, or undefined if absent. Rejects what is not a number in range with a readable
+ * message: `--limit -1` or `--limit abc` used to reach SQLite and fail there with
+ * "k value in knn queries must be >= 0" or "datatype mismatch" (#9).
+ */
+function numberFlag(
+  flags: Record<string, string>,
+  name: string,
+  kind: "positive-int" | "score",
+): number | undefined {
+  const raw = flags[name];
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  const ok =
+    kind === "positive-int"
+      ? Number.isInteger(value) && value > 0
+      : Number.isFinite(value) && value >= 0 && value <= 1;
+  if (!ok) {
+    console.error(
+      `Invalid --${name}: ${raw} (expected ${kind === "positive-int" ? "a whole number above 0" : "a number from 0 to 1"})`,
+    );
+    process.exit(1);
+  }
+  return value;
+}
+
 function requireFlag(flags: Record<string, string>, name: string): string {
   const value = flags[name];
   if (!value) {
@@ -220,10 +246,8 @@ Examples:
       case "search": {
         const result = await system.search({
           query: requireFlag(flags, "query"),
-          limit: flags.limit ? Number.parseInt(flags.limit, 10) : undefined,
-          minScore: flags["min-score"]
-            ? Number.parseFloat(flags["min-score"])
-            : undefined,
+          limit: numberFlag(flags, "limit", "positive-int"),
+          minScore: numberFlag(flags, "min-score", "score"),
           tags: flags.tags
             ? flags.tags.split(",").map((t) => t.trim())
             : undefined,
@@ -338,7 +362,7 @@ Examples:
             | "outgoing"
             | "incoming"
             | "both",
-          depth: flags.depth ? Number.parseInt(flags.depth, 10) : undefined,
+          depth: numberFlag(flags, "depth", "positive-int"),
         });
         console.log(JSON.stringify(result, null, 2));
         break;

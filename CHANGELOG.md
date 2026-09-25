@@ -23,6 +23,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without a dtype (the model's own setting, else fp32 on CPU), minus the warning.
   The vectors are identical (checked) and stored indexes stay valid.
 - **`relevance` in `suggested_connections` is rounded to three decimals.**
+- **Rare words are no longer buried by vector neighbours** (#7). An entry found by
+  only one search channel got the length of the *other* channel's result list as
+  its substitute rank; for a rare word full-text returns one row, so "missing from
+  full-text" scored almost like a full-text rank 1 and most vector neighbours
+  outranked the one exact match. Both channels now use `poolSize + 1`. On a copy of
+  a real 503-entry store, words that stand in exactly one entry reached the top 5
+  of the default search in 31 of 33 cases (before: 4); none of the measured
+  queries got worse. It does not guarantee position 1.
+- **Numeric CLI flags are validated** (#9). `--limit`, `--min-score` and
+  `--depth` with a value out of range (`-1`, `0`, `abc`, `1.5`) now stop with
+  `Invalid --limit: -1 (expected a whole number above 0)` instead of failing in
+  SQLite with `k value in knn queries must be >= 0` or `datatype mismatch`.
+
+### Documentation
+
+- README and `MemorySearchOutput.score`: what the normalised score means (ordinal
+  within one response, not a relevance measure), that `limit` is part of the
+  ranking, the real default weights, model and `minScore`, and an RRF example that
+  can actually occur (#9).
 
 - **Search no longer crashes on hyphenated queries.** `sanitizeFtsQuery` used a
   split regex (`/\b(\w+)-(\w+)\b/g`) that missed chained hyphens and non-ASCII
