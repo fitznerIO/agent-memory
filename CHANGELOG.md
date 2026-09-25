@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `existing_tags`; an agent took such a successful call for a failure. A result
   with `success: false` is still printed in full, and `update` says when the
   search index was not updated.
+- **The CLI warns when it is about to create an empty store.** Running from the
+  wrong working directory used to build a fresh, empty store in silence — every
+  search then came back with nothing, indistinguishable from a store without a
+  match. The warning goes to stderr, so stdout stays parseable JSON.
 
 ### Fixed
 
@@ -74,13 +78,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An unknown `--mode` is rejected** instead of falling back to `replace`. The
   flag decides whether the existing body survives; a typo used to overwrite it
   without a word.
-
-### Added
-
-- **The CLI warns when it is about to create an empty store.** Running from the
-  wrong working directory used to build a fresh, empty store in silence — every
-  search then came back with nothing, indistinguishable from a store without a
-  match. The warning goes to stderr, so stdout stays parseable JSON.
 
 ## [0.3.0] — 2026-06-01
 
