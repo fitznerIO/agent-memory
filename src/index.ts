@@ -283,8 +283,9 @@ const NON_WORD = "[^\\p{L}\\p{M}\\p{N}_]";
 
 /**
  * Every id-like token in `query` (NFC, dashes already folded to "-"), normalised to the stored
- * form: a registered id prefix followed by digits with a space, a dash or nothing between
- * ("note 130", "dec‑010", "DEC-010", "dec010" → "note-130", "dec-010", "dec-010", "dec-010"), any
+ * form: a registered id prefix followed by digits with any non-word characters or nothing between
+ * ("note 130", "note #130", "dec/010", "DEC‑010", "dec010" → "note-130", "dec-010", …) — the same
+ * separator class the phrase rule accepts, so no spelling of an id can reach the phrase rule — any
  * other `letters-digits` ("gpt-5"), or a UUID. `whole` is true when the query, stripped of
  * surrounding punctuation, is exactly one such token.
  */
@@ -295,7 +296,7 @@ function findIdTokens(query: string): { ids: string[]; whole: boolean } {
     .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
   const token = new RegExp(
-    `(?<!${WORD_CHAR})(?:(${prefixes.join("|")})[\\s-]*(\\d+)|(\\p{L}+-\\d+)|(${uuid}))(?!${WORD_CHAR})`,
+    `(?<!${WORD_CHAR})(?:(${prefixes.join("|")})${NON_WORD}*(\\d+)|(\\p{L}+-\\d+)|(${uuid}))(?!${WORD_CHAR})`,
     "giu",
   );
   const matches = [...query.matchAll(token)];

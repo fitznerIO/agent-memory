@@ -276,7 +276,12 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
         content:
           "See dec-001 and [[dec-001]] for hosting, dec 002 for backups, and dec-2 too.",
       });
-      expect([dec1.id, dec2.id]).toEqual(["dec-001", "dec-002"]);
+      const dec3 = await system.memoryStore({
+        title: "Logging decision",
+        type: "decision",
+        content: "Logs are kept for 30 days.",
+      });
+      expect([dec1.id, dec2.id, dec3.id]).toEqual(["dec-001", "dec-002", "dec-003"]);
       const exists = (p: string) => existsSync(join(tempDir, p));
 
       // Uppercase, wrapped in [[…]] with a trailing dot, a non-breaking hyphen (U+2011): dec-001.
@@ -295,8 +300,26 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
       });
       expect(second.forgotten).toEqual([dec2.file_path]);
 
+      // Any separator the phrase rule accepts is a separator here too: "#", ".", "/", "−" (U+2212).
+      const third = await system.forget({
+        query: "dec #003",
+        scope: "entry",
+        confirm: true,
+      });
+      expect(third.forgotten).toEqual([dec3.file_path]);
+
       // Retries and near misses: nothing, although the citing note contains "dec", "001", "002".
-      for (const query of ["dec-001", "dec–002", "dec-1", "decision-001", "dec-2"]) {
+      for (const query of [
+        "dec-001",
+        "dec–002",
+        "dec.001",
+        "dec/002",
+        "dec−001",
+        "dec#003",
+        "dec-1",
+        "decision-001",
+        "dec-2",
+      ]) {
         for (const scope of ["entry", "topic"] as const) {
           const again = await system.forget({ query, scope, confirm: true });
           expect(again.forgotten).toEqual([]);
@@ -323,6 +346,8 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
         "note 130 handover",
         "items from note-001",
         "Handover note-002",
+        "see note #130 first",
+        "note.130 and inc/007",
       ]) {
         for (const scope of ["entry", "topic"] as const) {
           const result = await system.forget({ query, scope, confirm: true });
