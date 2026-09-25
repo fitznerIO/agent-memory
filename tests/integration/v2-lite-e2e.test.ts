@@ -503,9 +503,8 @@ describe("PRD Validation: all 9 tools", () => {
       expect(refused.message).toContain("Confirm required");
       expect(refused.forgotten).toEqual([]);
 
-      // Second test: create a v1 entry, then delete it directly via store + index
-      // (forget() internally uses searchHybrid with minScore 0.3 which may
-      // filter results; testing the deletion path directly validates the tool)
+      // Second test: create a v1 entry, then delete it directly via store + index.
+      // What forget() itself chooses to delete is covered in forget-safety.test.ts.
       const memory = await system.store.create({
         metadata: {
           title: "Forgettable Entry",

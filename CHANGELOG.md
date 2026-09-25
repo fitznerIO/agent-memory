@@ -55,6 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Every write location is checked — the project store (also via `--project-dir` /
   `--base-dir`), the search index (`--sqlite-path`) and the global store
   (`--global-dir`) — with symlinks resolved.
+- **`forget` only deletes entries that contain the query** (#8). It used to delete
+  every hybrid search result above `minScore 0.3`, but that score is min-max
+  normalised per call, so the best candidate always scored 1.0 — a query that
+  matched nothing still deleted up to ten unrelated files, and `--scope entry`
+  searched at limit 1, where the one entry containing the word could lose to its
+  nearest vector neighbour. Candidates now have to be full-text matches (every
+  query word or its stem); among them the hybrid ranking picks the order. A query
+  that matches nothing deletes nothing and says so. An exact entry id
+  (`dec-012`, a note's UUID) deletes exactly that entry.
 - **Search no longer crashes on hyphenated queries.** `sanitizeFtsQuery` used a
   split regex (`/\b(\w+)-(\w+)\b/g`) that missed chained hyphens and non-ASCII
   words, so `"2026-08-27"` and `"NEUSTART-ÜBERGABE"` reached FTS5 with a hyphen

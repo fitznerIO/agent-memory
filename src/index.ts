@@ -34,6 +34,7 @@ import {
 } from "./shared/utils.ts";
 
 import { type MemoryConfig, createDefaultConfig } from "./shared/config.ts";
+import { MemoryNotFoundError } from "./shared/errors.ts";
 export type {
   ArchiveCandidate,
   CommitType,
@@ -720,16 +721,57 @@ export function createMemorySystem(
         };
       }
 
-      const queryEmbedding = await embedding.embed(input.query);
-      const results = await project.searchIndex.searchHybrid(
-        input.query,
-        queryEmbedding.vector,
-        { limit: input.scope === "entry" ? 1 : 10, minScore: 0.3 },
-      );
+      let targets: Memory[];
+
+      // An exact entry id ("dec-012", a note's UUID) names exactly one entry.
+      const byId = await project.store
+        .read(input.query.trim())
+        .catch((error: unknown) => {
+          if (error instanceof MemoryNotFoundError) return null;
+          throw error;
+        });
+
+      if (byId) {
+        targets = [byId];
+      } else {
+        // Otherwise only entries that actually contain the query are deleted, and the full-text
+        // index decides that. The hybrid score cannot: it is min-max normalised per call, so the
+        // best candidate always scores exactly 1.0, even for a query that matches nothing, and no
+        // minScore below 1.0 ever comes back empty. A query matching nothing used to delete
+        // unrelated files (#8).
+        const matches = await project.searchIndex.searchText(input.query, 50);
+        if (matches.length === 0) {
+          return {
+            success: true,
+            forgotten: [],
+            message: `No entry matches "${input.query}". Nothing was forgotten.`,
+          };
+        }
+
+        // Among the matches, the hybrid ranking picks the order, so meaning still counts and not
+        // only word frequency. Matches the hybrid list does not reach keep their full-text order.
+        // The hybrid search runs at limit 10 even for a single entry: at limit 1 its pool is three
+        // deep, and the one entry containing the word could lose to its nearest vector neighbour.
+        const queryEmbedding = await embedding.embed(input.query);
+        const ranked = await project.searchIndex.searchHybrid(
+          input.query,
+          queryEmbedding.vector,
+          { limit: 10, minScore: 0 },
+        );
+        const hybridRank = new Map(
+          ranked.map((r, i) => [r.memory.metadata.id, i]),
+        );
+        const rankOf = (r: SearchResult) =>
+          hybridRank.get(r.memory.metadata.id) ?? ranked.length;
+        targets = [...matches]
+          .sort((a, b) => rankOf(a) - rankOf(b))
+          .slice(0, input.scope === "entry" ? 1 : 10)
+          .map((r) => r.memory);
+      }
 
       const forgotten: string[] = [];
-      for (const result of results) {
-        const id = result.memory.metadata.id;
+      for (const memory of targets) {
+        const id = memory.metadata.id;
         await project.store.delete(id);
         await project.searchIndex.remove(id);
         // Also remove the v2-lite knowledge row (+ its tags/connections). This
@@ -737,7 +779,7 @@ export function createMemorySystem(
         // any extension `<ext>_meta` table keyed by entry_id (Extension System
         // §5.2/§12). Without this, knowledge/ext rows would be orphaned.
         await project.searchIndex.removeKnowledge(id);
-        forgotten.push(result.memory.filePath);
+        forgotten.push(memory.filePath);
       }
 
       return {
