@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { buildExtensionDispatch } from "./extensions/tool-registry.ts";
 import { createMemorySystem } from "./index.ts";
 import type { MemorySystem } from "./index.ts";
@@ -114,13 +114,19 @@ function report(
  * `<proj>/.agent-memory/…` the project-root walk stops at the store's own `.git` and picks
  * `<proj>/.agent-memory/.agent-memory`; writes then succeeded into a store nothing else reads.
  */
-function refuseNestedStore(storeDir: string): void {
+function refuseNestedStore(what: string, storeDir: string): void {
   const enclosing = findEnclosingStore(storeDir);
   if (!enclosing) return;
   console.error(
-    `[agent-memory] Refusing to run: the store would be ${storeDir}, which is inside the store at ${enclosing}. That would create a separate store that nothing else reads. Run the command from the project root (${dirname(enclosing)}) or pass --project-dir with the project root.`,
+    `[agent-memory] Refusing to run: the ${what} would be ${storeDir}, which is inside the store at ${enclosing}. That would create a separate store that nothing else reads. Run the command from the project root (${dirname(enclosing)}) or pass --project-dir with the project root.`,
   );
   process.exit(1);
+}
+
+/** The store folder a search index belongs to: `<store>/.index/search.sqlite` → `<store>`. */
+function indexOwner(sqlitePath: string): string {
+  const dir = dirname(sqlitePath);
+  return basename(dir) === ".index" ? dirname(dir) : dir;
 }
 
 async function initSystem(
@@ -156,7 +162,22 @@ async function initSystem(
   // store that simply had no match. The warning goes to stderr so stdout stays parseable JSON.
   const projectDir =
     (overrides.baseDir as string | undefined) ?? findProjectRoot(process.cwd());
-  refuseNestedStore(projectDir);
+
+  // Check every place this run writes to, not only the project store: its search index (from
+  // --sqlite-path, or else derived from the working directory — --base-dir alone does not move
+  // it), and the global store.
+  refuseNestedStore("store", projectDir);
+  refuseNestedStore(
+    "search index",
+    indexOwner(
+      (overrides.sqlitePath as string | undefined) ??
+        join(findProjectRoot(process.cwd()), ".index", "search.sqlite"),
+    ),
+  );
+  if (overrides.globalDir) {
+    refuseNestedStore("global store", overrides.globalDir as string);
+  }
+
   if (!existsSync(projectDir)) {
     console.error(
       `[agent-memory] No memory store at ${projectDir} — a new, empty one will be created. If you expected existing memories, the working directory or --project-dir points elsewhere.`,
@@ -222,7 +243,7 @@ Examples:
     const baseDir = flags["project-dir"]
       ? join(flags["project-dir"], ".agent-memory")
       : findProjectRoot(process.cwd());
-    refuseNestedStore(baseDir);
+    refuseNestedStore("store", baseDir);
 
     switch (step) {
       case "split-files": {

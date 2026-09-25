@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type { HybridSearchOptions } from "./types.ts";
 
@@ -41,22 +41,49 @@ export function findProjectRoot(cwd: string): string {
  * A store has its own `.git` (the Git Manager versions it), so findProjectRoot() called from
  * anywhere inside `<proj>/.agent-memory/…` stops at the store itself and returns
  * `<proj>/.agent-memory/.agent-memory` — a new, empty store inside the real one, which nothing
- * else ever reads. A folder counts as a store if it is named `.agent-memory` or holds a search
- * index, so a store at a custom `--base-dir` is recognised too.
+ * else ever reads.
+ *
+ * Symlinks are resolved first, so a path that reaches a store through a link is caught too.
+ * Not recognised: a store with a custom name whose index lives elsewhere (`--base-dir` plus an
+ * external `--sqlite-path`) — it carries neither marker `isStore()` looks for.
  */
 export function findEnclosingStore(storeDir: string): string | null {
-  let dir = dirname(resolve(storeDir));
+  let dir = dirname(realPath(storeDir));
   while (true) {
-    if (
-      basename(dir) === ".agent-memory" ||
-      existsSync(join(dir, ".index", "search.sqlite"))
-    ) {
-      return dir;
-    }
+    if (isStore(dir)) return dir;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
   }
+}
+
+/**
+ * A folder is a store if it is named `.agent-memory` and has the store's own `.git` or index, or,
+ * under any other name, has an index next to a memory folder. A folder merely named
+ * `.agent-memory`, or a stray `.index/search.sqlite` from some other tool, does not count.
+ */
+function isStore(dir: string): boolean {
+  const hasIndex = existsSync(join(dir, ".index", "search.sqlite"));
+  if (basename(dir) === ".agent-memory") {
+    return hasIndex || existsSync(join(dir, ".git"));
+  }
+  return (
+    hasIndex &&
+    ["semantic", "episodic", "procedural"].some((t) => existsSync(join(dir, t)))
+  );
+}
+
+/** `path` with symlinks resolved in the part that exists; the rest may not exist yet. */
+function realPath(path: string): string {
+  let existing = resolve(path);
+  const rest: string[] = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) break;
+    rest.unshift(basename(existing));
+    existing = parent;
+  }
+  return join(realpathSync(existing), ...rest);
 }
 
 export function createDefaultConfig(): MemoryConfig {

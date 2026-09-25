@@ -48,7 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new, empty store that nothing else reads, while `note` and `store` reported
   success. Every command that opens a store now stops with exit code 1 and a
   message naming the enclosing store and the project root, and creates nothing.
-  The same applies to `--project-dir` / `--base-dir` pointing into a store.
+  Every write location is checked — the project store (also via `--project-dir` /
+  `--base-dir`), the search index (`--sqlite-path`) and the global store
+  (`--global-dir`) — with symlinks resolved.
 - **Search no longer crashes on hyphenated queries.** `sanitizeFtsQuery` used a
   split regex (`/\b(\w+)-(\w+)\b/g`) that missed chained hyphens and non-ASCII
   words, so `"2026-08-27"` and `"NEUSTART-ÜBERGABE"` reached FTS5 with a hyphen

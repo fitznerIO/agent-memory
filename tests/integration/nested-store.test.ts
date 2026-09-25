@@ -9,7 +9,7 @@
  * The check runs before the memory system starts, so these tests never load the embedding model.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { findEnclosingStore } from "../../src/shared/config.ts";
 import { cleanupTempDir, createTempDir } from "../helpers/fixtures.ts";
@@ -17,7 +17,7 @@ import { cleanupTempDir, createTempDir } from "../helpers/fixtures.ts";
 const CLI = join(import.meta.dir, "..", "..", "src", "cli.ts");
 
 function runCli(cwd: string, args: string[]) {
-  const p = Bun.spawnSync(["bun", CLI, ...args, "--no-global"], {
+  const p = Bun.spawnSync(["bun", CLI, ...args], {
     cwd,
     stdout: "pipe",
     stderr: "pipe",
@@ -58,6 +58,7 @@ describe("nested stores (#10)", () => {
   test("findEnclosingStore recognises a store by its index, whatever its name", () => {
     const custom = join(tempDir, "custom-store");
     mkdirSync(join(custom, ".index"), { recursive: true });
+    mkdirSync(join(custom, "semantic"), { recursive: true });
     writeFileSync(join(custom, ".index", "search.sqlite"), "");
     expect(findEnclosingStore(join(custom, "sub", ".agent-memory"))).toBe(
       custom,
@@ -68,11 +69,32 @@ describe("nested stores (#10)", () => {
     expect(findEnclosingStore(store)).toBeNull();
   });
 
+  test("findEnclosingStore does not mistake look-alikes for a store", () => {
+    // A folder merely named .agent-memory (no .git, no index) is not a store.
+    const named = join(tempDir, ".agent-memory", "work", "repo");
+    mkdirSync(named, { recursive: true });
+    expect(findEnclosingStore(join(named, ".agent-memory"))).toBeNull();
+
+    // A stray .index/search.sqlite from some other tool, without memory folders, is not one either.
+    const stray = join(tempDir, "tool-output");
+    mkdirSync(join(stray, ".index"), { recursive: true });
+    writeFileSync(join(stray, ".index", "search.sqlite"), "");
+    mkdirSync(join(stray, "repo"), { recursive: true });
+    expect(findEnclosingStore(join(stray, "repo", ".agent-memory"))).toBeNull();
+  });
+
+  test("findEnclosingStore sees through a symlink into a store", () => {
+    const alias = join(tempDir, "alias");
+    symlinkSync(join(store, "semantic"), alias);
+    expect(findEnclosingStore(join(alias, ".agent-memory"))).toBe(store);
+  });
+
   test("the CLI refuses to run from inside a store and creates nothing", () => {
     const result = runCli(join(store, "semantic", "notes"), [
       "note",
       "--content",
       "should not be written",
+      "--no-global",
     ]);
 
     expect(result.exitCode).toBe(1);
@@ -91,10 +113,49 @@ describe("nested stores (#10)", () => {
       "c",
       "--project-dir",
       join(store, "semantic"),
+      "--no-global",
     ]);
 
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("inside the store");
     expect(existsSync(join(store, "semantic", ".agent-memory"))).toBe(false);
+  });
+
+  // Every place the CLI would write is checked, not only the project store.
+  describe("from a normal project, pointing another write path into a store", () => {
+    let other: string;
+
+    beforeEach(() => {
+      other = join(tempDir, "other");
+      mkdirSync(other, { recursive: true });
+      writeFileSync(join(other, "package.json"), '{"name":"other"}');
+    });
+
+    test("--global-dir inside a store", () => {
+      const result = runCli(other, [
+        "note",
+        "--content",
+        "x",
+        "--global-dir",
+        join(store, "child"),
+      ]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("inside the store");
+      expect(existsSync(join(store, "child"))).toBe(false);
+    });
+
+    test("--sqlite-path inside a store", () => {
+      const result = runCli(other, [
+        "note",
+        "--content",
+        "x",
+        "--no-global",
+        "--sqlite-path",
+        join(store, "child", ".index", "search.sqlite"),
+      ]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("inside the store");
+      expect(existsSync(join(store, "child"))).toBe(false);
+    });
   });
 });
