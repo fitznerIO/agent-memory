@@ -110,6 +110,11 @@ export interface MemorySearchOutput {
   results: Array<{
     content: string;
     source: string;
+    /**
+     * Min-max normalised over its store's candidate pool, before minScore, limit and filters: the
+     * best candidate gets 1.0 even when nothing matches well. Orders the results of one search;
+     * not a relevance measure, not comparable across searches.
+     */
     score: number;
     type: string;
     lastAccessed: string;

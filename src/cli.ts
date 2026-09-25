@@ -40,6 +40,47 @@ function parseArgs(argv: string[]): {
   return { command: command ?? "", positionals, flags };
 }
 
+/**
+ * A numeric flag, or undefined if absent. Rejects what is not a number in range with a readable
+ * message: `--limit -1` or `--limit abc` used to reach SQLite and fail there with
+ * "k value in knn queries must be >= 0" or "datatype mismatch" (#9).
+ */
+function numberFlag(
+  flags: Record<string, string>,
+  name: string,
+  kind: "positive-int" | "score",
+  max?: number,
+): number | undefined {
+  const raw = flags[name];
+  if (raw === undefined) return undefined;
+  // Number("") and Number(" ") are 0; a blank value is not a number here.
+  const value = raw.trim() === "" ? Number.NaN : Number(raw);
+  const ok =
+    kind === "positive-int"
+      ? Number.isInteger(value) &&
+        value > 0 &&
+        (max === undefined || value <= max)
+      : Number.isFinite(value) && value >= 0 && value <= 1;
+  if (!ok) {
+    const expected =
+      kind === "score"
+        ? "a number from 0 to 1"
+        : max === undefined
+          ? "a whole number above 0"
+          : `a whole number from 1 to ${max}`;
+    console.error(`Invalid --${name}: ${raw} (expected ${expected})`);
+    process.exit(1);
+  }
+  return value;
+}
+
+/**
+ * sqlite-vec returns at most 4096 nearest neighbours. search() fetches limit × 5 candidates when a
+ * tag or connection filter is set, and searchHybrid pools 3 × that, so limit × 15 must stay below
+ * 4096 (273 at most). 200 leaves room and is a round number to remember.
+ */
+const MAX_SEARCH_LIMIT = 200;
+
 function requireFlag(flags: Record<string, string>, name: string): string {
   const value = flags[name];
   if (!value) {
@@ -220,10 +261,8 @@ Examples:
       case "search": {
         const result = await system.search({
           query: requireFlag(flags, "query"),
-          limit: flags.limit ? Number.parseInt(flags.limit, 10) : undefined,
-          minScore: flags["min-score"]
-            ? Number.parseFloat(flags["min-score"])
-            : undefined,
+          limit: numberFlag(flags, "limit", "positive-int", MAX_SEARCH_LIMIT),
+          minScore: numberFlag(flags, "min-score", "score"),
           tags: flags.tags
             ? flags.tags.split(",").map((t) => t.trim())
             : undefined,
@@ -338,7 +377,7 @@ Examples:
             | "outgoing"
             | "incoming"
             | "both",
-          depth: flags.depth ? Number.parseInt(flags.depth, 10) : undefined,
+          depth: numberFlag(flags, "depth", "positive-int"),
         });
         console.log(JSON.stringify(result, null, 2));
         break;

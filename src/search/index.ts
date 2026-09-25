@@ -661,15 +661,18 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       // Fallback rank for documents missing from one result set.
       //
       // This must NOT depend on the individual list length. The vector search
-      // always returns a full pool (it has no notion of "no match"), while FTS
-      // returns only real matches -- often a single one for a rare word. With a
-      // length-based fallback, "missing from FTS" then scored as rank 2, almost
-      // as good as an actual FTS rank 1, and every vector neighbour outranked
-      // the one exact match. The rarer the word, the deeper the true hit sank.
+      // has no notion of "no match" and fills the pool whenever enough vectors
+      // are indexed, while FTS returns only matching entries -- often a single
+      // one for a rare word. With a length-based fallback, "missing from FTS"
+      // then scored as rank 2, almost as good as an actual FTS rank 1, and most
+      // vector neighbours outranked the one exact match (8 of 15 at limit 5,
+      // 135 of 150 at limit 50). The rarer the word, the deeper the hit sank.
       //
       // Both channels therefore share one fallback: just past the pool. It is
       // the correct estimate for a truncated list and the harshest penalty the
-      // pool allows for an exhausted one.
+      // pool allows for an exhausted one. It can change results whenever a list
+      // is shorter than the pool (for entries missing from that list); in a fully
+      // embedded store, entries that match the query words can only move up.
       const missingRank = poolSize + 1;
 
       const now = Date.now();

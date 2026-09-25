@@ -472,20 +472,26 @@ describe("SearchIndex", () => {
         }),
       );
 
-      // With dynamic k, small pool (limit*3=15) yields k=3, not 60.
-      // Score for rank 1: 1/(3+1)=0.25 vs k=60: 1/(60+1)=0.016
-      const results = await idx.searchHybrid("TypeScript", vec1, {
-        limit: 5,
-        minScore: 0,
-        weightFts: 0.3,
-        weightVector: 0.5,
-        weightRecency: 0.2,
-        rrfK: 60,
-      });
+      // With dynamic k, a small pool (limit*3 = 15) caps k at floor(15/4) = 3.
+      // Scores are min-max normalised, so the top one is always 1.0 and cannot
+      // show k (#9, item 5). What does show it: rrfK 60 and rrfK 3 must give the
+      // same scores (both capped to 3), rrfK 1 different ones (k = 1).
+      const scoresAt = async (rrfK: number) =>
+        (
+          await idx.searchHybrid("TypeScript", vec1, {
+            limit: 5,
+            minScore: 0,
+            weightFts: 0.3,
+            weightVector: 0.5,
+            weightRecency: 0,
+            rrfK,
+          })
+        ).map((r) => `${r.memory.metadata.id}:${r.score.toFixed(6)}`);
 
-      expect(results.length).toBeGreaterThan(0);
-      // Top result score should be > 0.2 (would be ~0.01 with static k=60)
-      expect(results[0]!.score).toBeGreaterThan(0.2);
+      const at60 = await scoresAt(60);
+      expect(at60.length).toBe(3);
+      expect(at60).toEqual(await scoresAt(3));
+      expect(at60).not.toEqual(await scoresAt(1));
     });
   });
 
