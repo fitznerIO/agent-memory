@@ -40,6 +40,9 @@ const ENTRIES = [
   "We tested variant B of a landing page",
   // All words of "Stufe 3" are here, but not as that phrase.
   "Stufe 1 ist fertig, danach kommen 3 Tests",
+  // Whole words only: "variant A" must not reach "variant Alpha", "rat" must not reach "Rater".
+  "The variant Alpha was dropped",
+  "The Rater gave five stars",
   // Prefix stripping turns "unsicher" (unsafe) into "sich", which "sicher" (safe) also indexes.
   "Das Deployment ist sicher",
 ];
@@ -166,6 +169,20 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
   );
 
   test(
+    "only whole words count: a query word does not match a longer word",
+    async () => {
+      for (const query of ["rat", "variant A"]) {
+        for (const scope of ["entry", "topic"] as const) {
+          const result = await system.forget({ query, scope, confirm: true });
+          expect(result.forgotten).toEqual([]);
+        }
+      }
+      expect(remaining(tempDir)).toEqual(ENTRIES);
+    },
+    TEST_TIMEOUT,
+  );
+
+  test(
     "the words have to stand together, in the order of the query",
     async () => {
       // "Stufe 1 ist fertig, danach kommen 3 Tests" has both words, not the phrase "Stufe 3".
@@ -241,31 +258,45 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
   // through to the word rule turned "dec-001" into "dec" + "001", so a retry after the entry was
   // gone deleted every entry that merely cited it.
   test(
-    "id-shaped queries: case and brackets are ignored, a retry or a near miss deletes nothing",
+    "id-shaped queries: case, brackets, spaces and dash variants are ignored; a retry or a near miss deletes nothing",
     async () => {
-      const dec = await system.memoryStore({
+      const dec1 = await system.memoryStore({
         title: "Hosting decision",
         type: "decision",
         content: "We host the dashboard on the small VPS.",
       });
+      const dec2 = await system.memoryStore({
+        title: "Backup decision",
+        type: "decision",
+        content: "Backups run every night.",
+      });
       const citing = await system.memoryStore({
         title: "Follow-up",
         type: "note",
-        content: "See dec-001 and [[dec-001]] for the hosting choice, and dec-2 too.",
+        content:
+          "See dec-001 and [[dec-001]] for hosting, dec 002 for backups, and dec-2 too.",
       });
-      expect(dec.id).toBe("dec-001");
+      expect([dec1.id, dec2.id]).toEqual(["dec-001", "dec-002"]);
       const exists = (p: string) => existsSync(join(tempDir, p));
 
-      // Uppercase, wrapped in [[…]] with a trailing dot: still the id dec-001.
+      // Uppercase, wrapped in [[…]] with a trailing dot, a non-breaking hyphen (U+2011): dec-001.
       const first = await system.forget({
-        query: " [[DEC-001]]. ",
+        query: " [[DEC‑001]]. ",
         scope: "entry",
         confirm: true,
       });
-      expect(first.forgotten).toEqual([dec.file_path]);
+      expect(first.forgotten).toEqual([dec1.file_path]);
 
-      // Retry, and near misses: nothing, although the citing note contains "dec" and "001".
-      for (const query of ["dec-001", "dec-1", "decision-001", "dec-2"]) {
+      // A space instead of the hyphen: dec-002.
+      const second = await system.forget({
+        query: "dec 002",
+        scope: "entry",
+        confirm: true,
+      });
+      expect(second.forgotten).toEqual([dec2.file_path]);
+
+      // Retries and near misses: nothing, although the citing note contains "dec", "001", "002".
+      for (const query of ["dec-001", "dec–002", "dec-1", "decision-001", "dec-2"]) {
         for (const scope of ["entry", "topic"] as const) {
           const again = await system.forget({ query, scope, confirm: true });
           expect(again.forgotten).toEqual([]);
@@ -273,6 +304,51 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
         }
       }
       expect(exists(citing.file_path)).toBe(true);
+    },
+    TEST_TIMEOUT,
+  );
+
+  // A query that contains an id but is not exactly one id — a list, or an id in a sentence — is
+  // refused. As text it matched exactly the entries that cite the id, and those were deleted.
+  test(
+    "a query with ids in a list or a sentence is refused and deletes nothing",
+    async () => {
+      const note = await system.memoryStore({
+        title: "Handover",
+        type: "note",
+        content: "Open items from note-001 and inc-007, inc-008; see note 130.",
+      });
+      for (const query of [
+        "inc-007, inc-008",
+        "note 130 handover",
+        "items from note-001",
+        "Handover note-002",
+      ]) {
+        for (const scope of ["entry", "topic"] as const) {
+          const result = await system.forget({ query, scope, confirm: true });
+          expect(result.forgotten).toEqual([]);
+          expect(result.message).toContain("one id at a time");
+        }
+      }
+      expect(existsSync(join(tempDir, note.file_path))).toBe(true);
+    },
+    TEST_TIMEOUT,
+  );
+
+  test(
+    "a phrase in the title alone is enough",
+    async () => {
+      const entry = await system.memoryStore({
+        title: "Quarterly zeppelin review",
+        type: "note",
+        content: "Numbers look fine.",
+      });
+      const result = await system.forget({
+        query: "quarterly zeppelin review",
+        scope: "entry",
+        confirm: true,
+      });
+      expect(result.forgotten).toEqual([entry.file_path]);
     },
     TEST_TIMEOUT,
   );

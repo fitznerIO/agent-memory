@@ -24,7 +24,10 @@ import type { SearchIndex } from "./search/types.ts";
 import { parseMarkdown, serializeMarkdown } from "./shared/markdown.ts";
 export type { MemoryConfig } from "./shared/config.ts";
 export { findProjectRoot } from "./shared/config.ts";
-import { getRegisteredKnowledgeTypes } from "./shared/knowledge-types.ts";
+import {
+  getIdPrefix,
+  getRegisteredKnowledgeTypes,
+} from "./shared/knowledge-types.ts";
 import {
   getInverseType,
   getLastModified,
@@ -275,30 +278,49 @@ function mergeExtensions(
   return [...byName.values()];
 }
 
-/** A v2-lite entry id ("dec-012", "note-7") or a UUID, lowercase. */
-const ID_SHAPED =
-  /^(?:[a-z]+-\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+const WORD_CHAR = "[\\p{L}\\p{M}\\p{N}_]";
+const NON_WORD = "[^\\p{L}\\p{M}\\p{N}_]";
+
+/**
+ * Every id-like token in `query` (NFC, dashes already folded to "-"), normalised to the stored
+ * form: a registered id prefix followed by digits with a space, a dash or nothing between
+ * ("note 130", "dec‑010", "DEC-010", "dec010" → "note-130", "dec-010", "dec-010", "dec-010"), any
+ * other `letters-digits` ("gpt-5"), or a UUID. `whole` is true when the query, stripped of
+ * surrounding punctuation, is exactly one such token.
+ */
+function findIdTokens(query: string): { ids: string[]; whole: boolean } {
+  const prefixes = getRegisteredKnowledgeTypes()
+    .map((t) => getIdPrefix(t))
+    .sort((a, b) => b.length - a.length)
+    .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+  const token = new RegExp(
+    `(?<!${WORD_CHAR})(?:(${prefixes.join("|")})[\\s-]*(\\d+)|(\\p{L}+-\\d+)|(${uuid}))(?!${WORD_CHAR})`,
+    "giu",
+  );
+  const matches = [...query.matchAll(token)];
+  const ids = matches.map((m) =>
+    (m[1] ? `${m[1]}-${m[2]}` : (m[3] ?? m[4] ?? "")).toLowerCase(),
+  );
+  const core = query.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  return { ids, whole: matches.length === 1 && matches[0]?.[0] === core };
+}
 
 /**
  * The phrase `forget` requires, as a regex over NFC-normalised lowercase text, or null for a query
- * without words. The query's words must appear in order with only non-word characters between
- * them; each starts at a word boundary, a longer word may continue ("soup" → "soups"), a one-letter
- * word must stand alone ("variant a" does not match "variant b of a page"). Combining marks count
- * as part of a word, so a decomposed "Ä" is not the letter "a" followed by a boundary.
+ * without words: the query's words, in order, as whole words, with only non-word characters
+ * between them ("variant a" does not match "variant alpha", "rat" does not match "rater").
+ * Combining marks count as part of a word, so a decomposed "Ä" is not "a" plus a boundary.
  */
 function forgetPhrase(query: string): RegExp | null {
-  const word = "[\\p{L}\\p{M}\\p{N}_]";
   const words = query
     .normalize("NFC")
     .toLowerCase()
-    .split(/[^\p{L}\p{M}\p{N}_]+/u)
+    .split(new RegExp(`${NON_WORD}+`, "u"))
     .filter((w) => w.length > 0);
   if (words.length === 0) return null;
-  const parts = words.map((w) =>
-    w.length === 1 ? `${w}(?!${word})` : `${w}${word}*`,
-  );
   return new RegExp(
-    `(?<!${word})${parts.join("[^\\p{L}\\p{M}\\p{N}_]+")}`,
+    `(?<!${WORD_CHAR})${words.join(`${NON_WORD}+`)}(?!${WORD_CHAR})`,
     "u",
   );
 }
@@ -751,28 +773,35 @@ export function createMemorySystem(
 
       let targets: Memory[];
 
-      // An id-shaped query — a v2-lite id like "dec-012" or a note's UUID, ignoring case and any
-      // punctuation around it such as [[…]] or a trailing "." — is only ever an id. If no entry has
-      // it, nothing is deleted. Falling through to the text rule turned "dec-010" into the words
-      // "dec" and "010", so a retry after the entry was gone deleted every entry that cited it.
-      // v2-lite ids are found by file-name prefix, so the id inside the file must match as well.
-      const idCandidate = input.query
-        .normalize("NFC")
-        .trim()
-        .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")
-        .toLowerCase();
-      if (ID_SHAPED.test(idCandidate)) {
+      // A query that contains an id is never treated as text. As text, "dec-010", "note 130" or
+      // "inc-007, inc-008" matched exactly the entries that cite those ids, and those were deleted
+      // while the entry meant stayed. Exactly one id — case, spaces or any dash between prefix and
+      // number, and punctuation around it such as [[…]] or "." ignored — is looked up as that id;
+      // if no entry has it, nothing is deleted. Several ids, or an id inside a sentence, are
+      // refused. v2-lite ids are found by file-name prefix, so the id in the file must match too.
+      const { ids, whole } = findIdTokens(
+        input.query.normalize("NFC").replace(/\p{Pd}/gu, "-"),
+      );
+      if (ids.length > 0 && !whole) {
+        return {
+          success: false,
+          forgotten: [],
+          message: `The query contains entry ids (${ids.join(", ")}). Nothing was forgotten: forget one id at a time, e.g. --query ${ids[0]}.`,
+        };
+      }
+      const queryId = ids[0];
+      if (queryId) {
         const byId = await project.store
-          .read(idCandidate)
+          .read(queryId)
           .catch((error: unknown) => {
             if (error instanceof MemoryNotFoundError) return null;
             throw error;
           });
-        if (!byId || byId.metadata.id !== idCandidate) {
+        if (!byId || byId.metadata.id !== queryId) {
           return {
             success: true,
             forgotten: [],
-            message: `No entry has the id "${idCandidate}". Nothing was forgotten.`,
+            message: `No entry has the id "${queryId}". Nothing was forgotten.`,
           };
         }
         targets = [byId];
@@ -785,11 +814,17 @@ export function createMemorySystem(
         // words by stems and German prefixes ("Vertrages" finds "Betrages"), drops one-letter
         // words ("variant A" searches "variant") and reads a bare OR as an operator. Fine for a
         // search, not for a delete. So the entry's title or text must contain the query's words
-        // literally, in order, with only spaces or punctuation between them, case-insensitive. A
-        // word may continue ("soup" matches "soups"); a one-letter word must stand alone.
+        // literally, as whole words, in order, with only spaces or punctuation between them,
+        // case-insensitive. The candidate list is not capped: with a cap, many near-misses
+        // ranked first could push the one real phrase match out and the answer would be wrong.
         const phrase = forgetPhrase(input.query);
         const matches = phrase
-          ? (await project.searchIndex.searchText(input.query, 500)).filter(
+          ? (
+              await project.searchIndex.searchText(
+                input.query,
+                Number.MAX_SAFE_INTEGER,
+              )
+            ).filter(
               (r) =>
                 phrase.test(
                   r.memory.metadata.title.normalize("NFC").toLowerCase(),

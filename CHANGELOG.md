@@ -61,14 +61,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matched nothing still deleted up to ten unrelated files, and `--scope entry`
   searched at limit 1, where the one entry containing the word could lose to its
   nearest vector neighbour. Candidates now have to be full-text matches whose title
-  or text also contains the query as a phrase — its words in order, only spaces or
-  punctuation between them, case-insensitive. Full-text search alone expands German
-  prefixes (`Vertrages` would have matched `Betrages`), drops one-letter words and
-  reads a bare `OR` as an operator. Among the candidates the hybrid ranking picks
-  the order. A query that matches nothing deletes nothing and says so. An
-  id-shaped query (`dec-012`, a UUID; case and surrounding punctuation ignored) is
-  only ever an id: it deletes exactly that entry, or nothing. The CLI rejects a
-  `--scope` other than `entry`/`topic` and a `--query` without a value.
+  or text also contains the query as a phrase — its words as whole words, in
+  order, only spaces or punctuation between them, case-insensitive. Full-text
+  search alone expands German prefixes (`Vertrages` would have matched
+  `Betrages`), drops one-letter words and reads a bare `OR` as an operator. Among
+  the candidates the hybrid ranking picks the order. A query that matches nothing
+  deletes nothing and says so. A query that is one entry id (`dec-012`, `note 130`,
+  `DEC‑012`, a UUID; case, a space or any dash, and surrounding punctuation
+  ignored) deletes exactly that entry, or nothing; a query with ids in a list or a
+  sentence is refused — as text it matched exactly the entries citing those ids.
+  The CLI rejects a `--scope` other than `entry`/`topic` and a `--query` without a
+  value.
 - **Search no longer crashes on hyphenated queries.** `sanitizeFtsQuery` used a
   split regex (`/\b(\w+)-(\w+)\b/g`) that missed chained hyphens and non-ASCII
   words, so `"2026-08-27"` and `"NEUSTART-ÜBERGABE"` reached FTS5 with a hyphen
