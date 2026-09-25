@@ -734,12 +734,29 @@ export function createMemorySystem(
       if (byId) {
         targets = [byId];
       } else {
-        // Otherwise only entries that actually contain the query are deleted, and the full-text
-        // index decides that. The hybrid score cannot: it is min-max normalised per call, so the
-        // best candidate always scores exactly 1.0, even for a query that matches nothing, and no
-        // minScore below 1.0 ever comes back empty. A query matching nothing used to delete
-        // unrelated files (#8).
-        const matches = await project.searchIndex.searchText(input.query, 50);
+        // Otherwise only entries that actually contain the query are deleted. The hybrid score
+        // cannot decide that: it is min-max normalised per call, so the best candidate always
+        // scores exactly 1.0, even for a query that matches nothing, and no minScore below 1.0
+        // ever comes back empty. A query matching nothing used to delete unrelated files (#8).
+        //
+        // The full-text index finds the candidates, but it is deliberately fuzzy: it expands
+        // words by stems and by stripping German prefixes, so "Vertrages" also finds "Betrages"
+        // (both index "trag"). Fine for a search, not for a delete. So every query word must also
+        // appear literally at the start of a word in the entry, case-insensitive: "soup" still
+        // matches "soups". Splitting like sanitizeFtsQuery leaves only letters, digits and "_".
+        const words = input.query
+          .toLowerCase()
+          .split(/[^\p{L}\p{N}_]+/u)
+          .filter((w) => w.length >= 2);
+        const containsEveryWord = (m: Memory) => {
+          const text = `${m.metadata.title} ${m.content}`.toLowerCase();
+          return words.every((w) =>
+            new RegExp(`(?<![\\p{L}\\p{N}_])${w}`, "u").test(text),
+          );
+        };
+        const matches = (
+          await project.searchIndex.searchText(input.query, 50)
+        ).filter((r) => containsEveryWord(r.memory));
         if (matches.length === 0) {
           return {
             success: true,

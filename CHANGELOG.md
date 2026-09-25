@@ -60,9 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   normalised per call, so the best candidate always scored 1.0 — a query that
   matched nothing still deleted up to ten unrelated files, and `--scope entry`
   searched at limit 1, where the one entry containing the word could lose to its
-  nearest vector neighbour. Candidates now have to be full-text matches (every
-  query word or its stem); among them the hybrid ranking picks the order. A query
-  that matches nothing deletes nothing and says so. An exact entry id
+  nearest vector neighbour. Candidates now have to be full-text matches that also
+  contain every query word literally (case-insensitive, at the start of a word) —
+  full-text search alone expands German prefixes, so `Vertrages` would have
+  matched `Betrages`. Among the candidates the hybrid ranking picks the order. A
+  query that matches nothing deletes nothing and says so. An exact entry id
   (`dec-012`, a note's UUID) deletes exactly that entry.
 - **Search no longer crashes on hyphenated queries.** `sanitizeFtsQuery` used a
   split regex (`/\b(\w+)-(\w+)\b/g`) that missed chained hyphens and non-ASCII

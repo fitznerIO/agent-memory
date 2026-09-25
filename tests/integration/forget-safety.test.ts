@@ -6,8 +6,8 @@
  * even for a query that matches nothing. A query matching no entry deleted six unrelated files.
  *
  * These tests call forget() itself on a real store with real embeddings. The tests share one
- * store and run in order: the first deletes nothing, the second one entry, the third three, the
- * fourth one entry by its id.
+ * store and run in order: the first two delete nothing, then one entry, three entries, and one
+ * entry by its id.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -32,6 +32,9 @@ const ENTRIES = [
   "Leek and potato soup freezes well in portions",
   "Tomato soup tastes better with roasted garlic",
   "Minestrone uses whatever vegetables are left over",
+  // Full-text search expands German words by stripping prefixes: "Betrages" and "Vertrages" both
+  // index the stem "trag". A search may find this entry for "Vertrages"; forget must not delete it.
+  "Die Hoehe des Betrages auf der Stromrechnung",
 ];
 
 /** Contents of every entry file still on disk. */
@@ -95,6 +98,26 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
         });
         expect(result.forgotten).toEqual([]);
       }
+      expect(remaining(tempDir)).toEqual(ENTRIES);
+    },
+    TEST_TIMEOUT,
+  );
+
+  test(
+    "a word that matches only through stemming deletes nothing",
+    async () => {
+      // Sanity: full-text search does see the entry, so the protection is in forget itself.
+      const fts = await system.searchIndex.searchText("Vertrages", 10);
+      expect(fts.map((r) => r.memory.content)).toContain(
+        "Die Hoehe des Betrages auf der Stromrechnung",
+      );
+
+      const result = await system.forget({
+        query: "Vertrages",
+        scope: "topic",
+        confirm: true,
+      });
+      expect(result.forgotten).toEqual([]);
       expect(remaining(tempDir)).toEqual(ENTRIES);
     },
     TEST_TIMEOUT,

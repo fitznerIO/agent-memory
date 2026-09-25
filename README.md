@@ -543,7 +543,7 @@ await memory.stop();
 | `search` | `{ query, type?, limit?, minScore?, tags?, connected_to? }` | Hybrid search across all memories |
 | `read` | `{ path }` | Read a specific memory file |
 | `update` | `{ path, content, reason, mode? }` | Update content + auto-reindex. `mode: "append"` keeps the existing body and adds to it; default is `"replace"` |
-| `forget` | `{ query, scope, confirm }` | Delete entries that contain every word of `query` (stems included), or the entry whose id is `query`. `scope: "entry"` deletes the best match, `"topic"` up to 10. A query that matches nothing deletes nothing |
+| `forget` | `{ query, scope, confirm }` | Delete entries that contain every word of `query` literally (case-insensitive, at the start of a word — `soup` matches `soups`; a stem-only match is not enough), or the entry whose id is `query`. `scope: "entry"` deletes the best match, `"topic"` up to 10. A query that matches nothing deletes nothing |
 | `commit` | `{ message, type }` | Git commit with semantic type |
 | `memoryStore` | `{ title, type, content, tags?, connections? }` | Store a knowledge entry |
 | `memoryConnect` | `{ source_id, target_id, type, note? }` | Create bidirectional connection |
