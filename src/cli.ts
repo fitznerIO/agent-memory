@@ -49,6 +49,25 @@ function requireFlag(flags: Record<string, string>, name: string): string {
   return value;
 }
 
+/**
+ * Print a command's result: pretty JSON by default, one line with --quiet. An agent reading a long
+ * JSON answer (plus a warning on stderr) took a successful `store` for a failure. A result that
+ * reports `success: false` is always printed in full, so --quiet never hides a failure.
+ */
+function report(
+  flags: Record<string, string>,
+  result: unknown,
+  quietLine: string,
+): void {
+  const failed =
+    typeof result === "object" &&
+    result !== null &&
+    "success" in result &&
+    result.success === false;
+  const quiet = flags.quiet === "true" && !failed;
+  console.log(quiet ? quietLine : JSON.stringify(result, null, 2));
+}
+
 async function initSystem(
   flags: Record<string, string>,
 ): Promise<MemorySystem> {
@@ -121,6 +140,8 @@ Global flags:
   --global-dir <path>   Global memory directory (default: ~/.agent-memory)
   --no-global           Disable global store
   --global              Route writes to global store
+  --quiet               One line instead of JSON for note, store, update, connect
+                        (a result with success: false is still printed in full)
 
 Examples:
   agent-memory note --content "User prefers TypeScript" --type semantic --importance medium
@@ -192,7 +213,7 @@ Examples:
             | "medium"
             | "low",
         });
-        console.log(JSON.stringify(result, null, 2));
+        report(flags, result, `noted ${result.noteId}`);
         break;
       }
 
@@ -230,13 +251,20 @@ Examples:
           );
           process.exit(1);
         }
+        const path = requireFlag(flags, "path");
         const result = await system.update({
-          path: requireFlag(flags, "path"),
+          path,
           content: requireFlag(flags, "content"),
           reason: requireFlag(flags, "reason"),
           mode,
         });
-        console.log(JSON.stringify(result, null, 2));
+        report(
+          flags,
+          result,
+          result.indexed
+            ? `updated ${path}`
+            : `updated ${path} (file written, search index NOT updated)`,
+        );
         break;
       }
 
@@ -279,7 +307,7 @@ Examples:
             ? flags.tags.split(",").map((t) => t.trim())
             : undefined,
         });
-        console.log(JSON.stringify(result, null, 2));
+        report(flags, result, `stored ${result.id} ${result.file_path}`);
         break;
       }
 
@@ -295,7 +323,11 @@ Examples:
             | "supersedes",
           note: flags.note,
         });
-        console.log(JSON.stringify(result, null, 2));
+        report(
+          flags,
+          result,
+          `connected ${flags.source} -> ${flags.target} (${flags.type ?? "related"})`,
+        );
         break;
       }
 

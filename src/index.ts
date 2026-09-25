@@ -373,9 +373,11 @@ export function createMemorySystem(
       }
     }
 
+    // Rounded only for output: sixteen digits of a similarity score read as noise to the caller.
     return [...candidates.values()]
       .sort((a, b) => b.relevance - a.relevance)
-      .slice(0, limit);
+      .slice(0, limit)
+      .map((c) => ({ ...c, relevance: Math.round(c.relevance * 1000) / 1000 }));
   }
 
   /**
