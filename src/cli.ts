@@ -52,7 +52,8 @@ function numberFlag(
 ): number | undefined {
   const raw = flags[name];
   if (raw === undefined) return undefined;
-  const value = Number(raw);
+  // Number("") and Number(" ") are 0; a blank value is not a number here.
+  const value = raw.trim() === "" ? Number.NaN : Number(raw);
   const ok =
     kind === "positive-int"
       ? Number.isInteger(value) && value > 0

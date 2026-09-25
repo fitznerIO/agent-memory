@@ -34,6 +34,32 @@ describe("numeric CLI flags (#9)", () => {
     await cleanupTempDir(project);
   });
 
+  test(
+    "a flag given without a value is rejected too",
+    () => {
+      // parseArgs turns a trailing flag without a value into the string "true".
+      const result = run(["search", "--query", "anything", "--limit"]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("Invalid --limit: true");
+    },
+    TEST_TIMEOUT,
+  );
+
+  test(
+    "valid values still work (whole number, 0 and 1 as min-score bounds)",
+    () => {
+      for (const args of [
+        ["--limit", "3", "--min-score", "0"],
+        ["--limit", "5.0", "--min-score", "1"],
+      ]) {
+        const result = run(["search", "--query", "anything", ...args]);
+        expect(result.exitCode).toBe(0);
+        expect(result.stderr).not.toContain("Invalid");
+      }
+    },
+    TEST_TIMEOUT,
+  );
+
   for (const [flag, value, expected] of [
     ["--limit", "-1", "Invalid --limit: -1"],
     ["--limit", "abc", "Invalid --limit: abc"],
@@ -41,6 +67,7 @@ describe("numeric CLI flags (#9)", () => {
     ["--limit", "2.5", "Invalid --limit: 2.5"],
     ["--min-score", "1.5", "Invalid --min-score: 1.5"],
     ["--min-score", "x", "Invalid --min-score: x"],
+    ["--min-score", "", "Invalid --min-score: "],
   ] as const) {
     test(
       `search ${flag} ${value} is rejected with a readable message`,

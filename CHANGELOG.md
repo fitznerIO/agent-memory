@@ -24,17 +24,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The vectors are identical (checked) and stored indexes stay valid.
 - **`relevance` in `suggested_connections` is rounded to three decimals.**
 - **Rare words are no longer buried by vector neighbours** (#7). An entry found by
-  only one search channel got the length of the *other* channel's result list as
-  its substitute rank; for a rare word full-text returns one row, so "missing from
+  only one search channel got the length of the *other* channel's result list plus
+  one as its substitute rank; for a rare word full-text returns one row, so "missing from
   full-text" scored almost like a full-text rank 1 and most vector neighbours
   outranked the one exact match. Both channels now use `poolSize + 1`. On a copy of
   a real 503-entry store, words that stand in exactly one entry reached the top 5
   of the default search in 31 of 33 cases (before: 4); none of the measured
   queries got worse. It does not guarantee position 1.
-- **Numeric CLI flags are validated** (#9). `--limit`, `--min-score` and
-  `--depth` with a value out of range (`-1`, `0`, `abc`, `1.5`) now stop with
+- **Numeric CLI flags are validated** (#9). `--limit` and `--depth` must be whole
+  numbers above 0, `--min-score` a number from 0 to 1; anything else (`-1`, `abc`,
+  an empty value, `--limit 0`, `--min-score 1.5`) stops with
   `Invalid --limit: -1 (expected a whole number above 0)` instead of failing in
-  SQLite with `k value in knn queries must be >= 0` or `datatype mismatch`.
+  SQLite with `k value in knn queries must be >= 0` or `datatype mismatch`. Values
+  are read as numbers, not with `parseInt`: `--limit 1e1` now means 10 (was 1).
 
 ### Documentation
 

@@ -670,9 +670,9 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       //
       // Both channels therefore share one fallback: just past the pool. It is
       // the correct estimate for a truncated list and the harshest penalty the
-      // pool allows for an exhausted one. It changes results whenever a list
-      // is shorter than the pool; in a fully embedded store, entries that match
-      // the query words can only move up.
+      // pool allows for an exhausted one. It can change results whenever a list
+      // is shorter than the pool (for entries missing from that list); in a fully
+      // embedded store, entries that match the query words can only move up.
       const missingRank = poolSize + 1;
 
       const now = Date.now();

@@ -249,15 +249,19 @@ search has no notion of "no match", so it fills the pool whenever enough vectors
 are indexed; full-text search returns only entries whose words or word stems match.
 A length-based substitute therefore made "missing from full-text" score almost as
 well as an actual full-text rank 1 whenever the query was rare, and buried exact
-matches. The substitute changes results whenever a list is shorter than the pool;
-in a fully embedded store, entries that match the query words can only move up.
+matches. The substitute can change results whenever a list is shorter than the pool
+(for entries missing from that list); in a fully embedded store, entries that match
+the query words can only move up.
 
-**What the score means.** Scores are min-max normalised within one response: the
-best candidate is always `1.0` and the worst `0.0`, even when nothing matches well.
+**What the score means.** Scores are min-max normalised over each store's candidate
+pool, before `minScore`, `limit` and tag or connection filters: the best candidate
+gets `1.0` even when nothing matches well, and — with at least two different scores —
+the worst gets `0.0` (a single candidate, or all-equal scores, all get `1.0`).
 A score orders the results of one search; it is not a relevance measure and cannot
 be compared across searches. `minScore` filters on this normalised value, so it can
-drop the weakest real match (#9). The CLI's `search` passes `minScore 0.3` unless
-`--min-score` is given; the config default of `0.1` applies to library calls.
+drop the weakest real match (#9). `search()` — and so the CLI — uses `minScore 0.3`
+unless one is given (`--min-score`); the config default of `0.1` only applies when
+`searchHybrid` is called directly.
 
 **`limit` is part of the ranking**, not just the length of the answer: it sets the
 candidate pool (`limit * 3`), the RRF constant `k` (capped at `poolSize / 4`) and the
@@ -652,7 +656,7 @@ All settings flow through `MemoryConfig`:
   embeddingDimensions: 384,
   hybridDefaults: {
     limit: 5,                           // Max results
-    minScore: 0.1,                      // Minimum normalised score (the CLI's search passes 0.3)
+    minScore: 0.1,                      // Minimum normalised score for searchHybrid (search() uses 0.3)
     weightFts: 0.4,                     // BM25 weight
     weightVector: 0.55,                 // Cosine similarity weight
     weightRecency: 0.05,                // Recency boost weight
