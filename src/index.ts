@@ -723,15 +723,16 @@ export function createMemorySystem(
 
       let targets: Memory[];
 
-      // An exact entry id ("dec-012", a note's UUID) names exactly one entry.
-      const byId = await project.store
-        .read(input.query.trim())
-        .catch((error: unknown) => {
-          if (error instanceof MemoryNotFoundError) return null;
-          throw error;
-        });
+      // An exact entry id ("dec-012", a note's UUID) names exactly one entry. The lookup finds
+      // v2-lite ids by file name prefix, so the id in the file itself is checked too: a file
+      // named dec-001-… that says `id: dec-002` must not turn "dec-001" into deleting dec-002.
+      const queryId = input.query.trim();
+      const byId = await project.store.read(queryId).catch((error: unknown) => {
+        if (error instanceof MemoryNotFoundError) return null;
+        throw error;
+      });
 
-      if (byId) {
+      if (byId && byId.metadata.id === queryId) {
         targets = [byId];
       } else {
         // Otherwise only entries that actually contain the query are deleted. The hybrid score
@@ -743,15 +744,20 @@ export function createMemorySystem(
         // words by stems and by stripping German prefixes, so "Vertrages" also finds "Betrages"
         // (both index "trag"). Fine for a search, not for a delete. So every query word must also
         // appear literally at the start of a word in the entry, case-insensitive: "soup" still
-        // matches "soups". Splitting like sanitizeFtsQuery leaves only letters, digits and "_".
+        // matches "soups". Full-text search drops one-letter words, so "variant A" would match
+        // "variant B"; here a one-letter word has to stand as a whole word. Splitting like
+        // sanitizeFtsQuery leaves only letters, digits and "_".
         const words = input.query
           .toLowerCase()
           .split(/[^\p{L}\p{N}_]+/u)
-          .filter((w) => w.length >= 2);
+          .filter((w) => w.length > 0);
         const containsEveryWord = (m: Memory) => {
           const text = `${m.metadata.title} ${m.content}`.toLowerCase();
           return words.every((w) =>
-            new RegExp(`(?<![\\p{L}\\p{N}_])${w}`, "u").test(text),
+            new RegExp(
+              `(?<![\\p{L}\\p{N}_])${w}${w.length === 1 ? "(?![\\p{L}\\p{N}_])" : ""}`,
+              "u",
+            ).test(text),
           );
         };
         const matches = (

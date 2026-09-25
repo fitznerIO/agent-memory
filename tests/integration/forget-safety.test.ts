@@ -35,6 +35,10 @@ const ENTRIES = [
   // Full-text search expands German words by stripping prefixes: "Betrages" and "Vertrages" both
   // index the stem "trag". A search may find this entry for "Vertrages"; forget must not delete it.
   "Die Hoehe des Betrages auf der Stromrechnung",
+  // Full-text search drops one-letter words, so "variant A" searches for "variant" alone.
+  "We tested variant B of the landing page",
+  // Prefix stripping turns "unsicher" (unsafe) into "sich", which "sicher" (safe) also indexes.
+  "Das Deployment ist sicher",
 ];
 
 /** Contents of every entry file still on disk. */
@@ -104,16 +108,49 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
   );
 
   test(
-    "a word that matches only through stemming deletes nothing",
+    "a word that matches only through stemming or a stripped prefix deletes nothing",
     async () => {
-      // Sanity: full-text search does see the entry, so the protection is in forget itself.
-      const fts = await system.searchIndex.searchText("Vertrages", 10);
-      expect(fts.map((r) => r.memory.content)).toContain(
-        "Die Hoehe des Betrages auf der Stromrechnung",
-      );
+      // Sanity: full-text search does see these entries, so the protection is in forget itself.
+      for (const [query, entry] of [
+        ["Vertrages", "Die Hoehe des Betrages auf der Stromrechnung"],
+        ["unsicher", "Das Deployment ist sicher"],
+      ] as const) {
+        const fts = await system.searchIndex.searchText(query, 10);
+        expect(fts.map((r) => r.memory.content)).toContain(entry);
+
+        const result = await system.forget({ query, scope: "topic", confirm: true });
+        expect(result.forgotten).toEqual([]);
+      }
+      expect(remaining(tempDir)).toEqual(ENTRIES);
+    },
+    TEST_TIMEOUT,
+  );
+
+  test(
+    "an uppercase OR in the query does not loosen the rule",
+    async () => {
+      // FTS5 reads a bare OR as an operator, so full-text search finds entries with either word.
+      // (Only for words without stems — with a stem group the query becomes a syntax error and
+      // finds nothing, which would make this test pass for the wrong reason.)
+      const fts = await system.searchIndex.searchText("cumin OR garlic", 10);
+      expect(fts.length).toBe(2);
 
       const result = await system.forget({
-        query: "Vertrages",
+        query: "cumin OR garlic",
+        scope: "topic",
+        confirm: true,
+      });
+      expect(result.forgotten).toEqual([]);
+      expect(remaining(tempDir)).toEqual(ENTRIES);
+    },
+    TEST_TIMEOUT,
+  );
+
+  test(
+    "a one-letter word in the query still has to be in the entry",
+    async () => {
+      const result = await system.forget({
+        query: "variant A",
         scope: "topic",
         confirm: true,
       });
