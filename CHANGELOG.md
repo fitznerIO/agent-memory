@@ -67,11 +67,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Betrages`), drops one-letter words and reads a bare `OR` as an operator. Among
   the candidates the hybrid ranking picks the order. A query that matches nothing
   deletes nothing and says so. A query that is one entry id (`dec-012`, `note 130`,
-  `DEC‑012`, a UUID; case, a space or any dash, and surrounding punctuation
-  ignored) deletes exactly that entry, or nothing; a query with ids in a list or a
-  sentence is refused — as text it matched exactly the entries citing those ids.
-  The CLI rejects a `--scope` other than `entry`/`topic` and a `--query` without a
-  value.
+  `DEC‑012`, `note #130`, a UUID; case, any spaces or punctuation between prefix
+  and number, and surrounding punctuation ignored) deletes exactly that entry, or
+  nothing; a query with ids in a list or a sentence is refused — as text it
+  matched exactly the entries citing those ids. The CLI rejects a `--scope` other
+  than `entry`/`topic` and a `--query` without a value.
 - **Search no longer crashes on hyphenated queries.** `sanitizeFtsQuery` used a
   split regex (`/\b(\w+)-(\w+)\b/g`) that missed chained hyphens and non-ASCII
   words, so `"2026-08-27"` and `"NEUSTART-ÜBERGABE"` reached FTS5 with a hyphen
