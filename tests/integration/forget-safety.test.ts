@@ -10,7 +10,7 @@
  * entry by its id.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createMemorySystem } from "../../src/index.ts";
 import type { MemorySystem } from "../../src/index.ts";
@@ -35,8 +35,11 @@ const ENTRIES = [
   // Full-text search expands German words by stripping prefixes: "Betrages" and "Vertrages" both
   // index the stem "trag". A search may find this entry for "Vertrages"; forget must not delete it.
   "Die Hoehe des Betrages auf der Stromrechnung",
-  // Full-text search drops one-letter words, so "variant A" searches for "variant" alone.
-  "We tested variant B of the landing page",
+  // Full-text search drops one-letter words, so "variant A" searches for "variant" alone. The
+  // freestanding "a" matters: a rule that only asks for the letter somewhere would accept it.
+  "We tested variant B of a landing page",
+  // All words of "Stufe 3" are here, but not as that phrase.
+  "Stufe 1 ist fertig, danach kommen 3 Tests",
   // Prefix stripping turns "unsicher" (unsafe) into "sich", which "sicher" (safe) also indexes.
   "Das Deployment ist sicher",
 ];
@@ -149,12 +152,31 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
   test(
     "a one-letter word in the query still has to be in the entry",
     async () => {
-      const result = await system.forget({
-        query: "variant A",
-        scope: "topic",
-        confirm: true,
-      });
-      expect(result.forgotten).toEqual([]);
+      for (const scope of ["entry", "topic"] as const) {
+        const result = await system.forget({
+          query: "variant A",
+          scope,
+          confirm: true,
+        });
+        expect(result.forgotten).toEqual([]);
+      }
+      expect(remaining(tempDir)).toEqual(ENTRIES);
+    },
+    TEST_TIMEOUT,
+  );
+
+  test(
+    "the words have to stand together, in the order of the query",
+    async () => {
+      // "Stufe 1 ist fertig, danach kommen 3 Tests" has both words, not the phrase "Stufe 3".
+      for (const scope of ["entry", "topic"] as const) {
+        const result = await system.forget({
+          query: "Stufe 3",
+          scope,
+          confirm: true,
+        });
+        expect(result.forgotten).toEqual([]);
+      }
       expect(remaining(tempDir)).toEqual(ENTRIES);
     },
     TEST_TIMEOUT,
@@ -211,6 +233,46 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
             !e.includes("derailleur") && !e.includes("soup") && e !== target,
         ),
       );
+    },
+    TEST_TIMEOUT,
+  );
+
+  // An id-shaped query is only ever an id. If it names no entry, nothing is deleted. Falling
+  // through to the word rule turned "dec-001" into "dec" + "001", so a retry after the entry was
+  // gone deleted every entry that merely cited it.
+  test(
+    "id-shaped queries: case and brackets are ignored, a retry or a near miss deletes nothing",
+    async () => {
+      const dec = await system.memoryStore({
+        title: "Hosting decision",
+        type: "decision",
+        content: "We host the dashboard on the small VPS.",
+      });
+      const citing = await system.memoryStore({
+        title: "Follow-up",
+        type: "note",
+        content: "See dec-001 and [[dec-001]] for the hosting choice, and dec-2 too.",
+      });
+      expect(dec.id).toBe("dec-001");
+      const exists = (p: string) => existsSync(join(tempDir, p));
+
+      // Uppercase, wrapped in [[…]] with a trailing dot: still the id dec-001.
+      const first = await system.forget({
+        query: " [[DEC-001]]. ",
+        scope: "entry",
+        confirm: true,
+      });
+      expect(first.forgotten).toEqual([dec.file_path]);
+
+      // Retry, and near misses: nothing, although the citing note contains "dec" and "001".
+      for (const query of ["dec-001", "dec-1", "decision-001", "dec-2"]) {
+        for (const scope of ["entry", "topic"] as const) {
+          const again = await system.forget({ query, scope, confirm: true });
+          expect(again.forgotten).toEqual([]);
+          expect(again.message).toContain("No entry has the id");
+        }
+      }
+      expect(exists(citing.file_path)).toBe(true);
     },
     TEST_TIMEOUT,
   );

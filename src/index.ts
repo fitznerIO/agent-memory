@@ -275,6 +275,34 @@ function mergeExtensions(
   return [...byName.values()];
 }
 
+/** A v2-lite entry id ("dec-012", "note-7") or a UUID, lowercase. */
+const ID_SHAPED =
+  /^(?:[a-z]+-\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
+/**
+ * The phrase `forget` requires, as a regex over NFC-normalised lowercase text, or null for a query
+ * without words. The query's words must appear in order with only non-word characters between
+ * them; each starts at a word boundary, a longer word may continue ("soup" → "soups"), a one-letter
+ * word must stand alone ("variant a" does not match "variant b of a page"). Combining marks count
+ * as part of a word, so a decomposed "Ä" is not the letter "a" followed by a boundary.
+ */
+function forgetPhrase(query: string): RegExp | null {
+  const word = "[\\p{L}\\p{M}\\p{N}_]";
+  const words = query
+    .normalize("NFC")
+    .toLowerCase()
+    .split(/[^\p{L}\p{M}\p{N}_]+/u)
+    .filter((w) => w.length > 0);
+  if (words.length === 0) return null;
+  const parts = words.map((w) =>
+    w.length === 1 ? `${w}(?!${word})` : `${w}${word}*`,
+  );
+  return new RegExp(
+    `(?<!${word})${parts.join("[^\\p{L}\\p{M}\\p{N}_]+")}`,
+    "u",
+  );
+}
+
 export function createMemorySystem(
   overrides?: Partial<MemoryConfig>,
   opts?: CreateMemoryOptions,
@@ -723,51 +751,57 @@ export function createMemorySystem(
 
       let targets: Memory[];
 
-      // An exact entry id ("dec-012", a note's UUID) names exactly one entry. The lookup finds
-      // v2-lite ids by file name prefix, so the id in the file itself is checked too: a file
-      // named dec-001-… that says `id: dec-002` must not turn "dec-001" into deleting dec-002.
-      const queryId = input.query.trim();
-      const byId = await project.store.read(queryId).catch((error: unknown) => {
-        if (error instanceof MemoryNotFoundError) return null;
-        throw error;
-      });
-
-      if (byId && byId.metadata.id === queryId) {
+      // An id-shaped query — a v2-lite id like "dec-012" or a note's UUID, ignoring case and any
+      // punctuation around it such as [[…]] or a trailing "." — is only ever an id. If no entry has
+      // it, nothing is deleted. Falling through to the text rule turned "dec-010" into the words
+      // "dec" and "010", so a retry after the entry was gone deleted every entry that cited it.
+      // v2-lite ids are found by file-name prefix, so the id inside the file must match as well.
+      const idCandidate = input.query
+        .normalize("NFC")
+        .trim()
+        .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")
+        .toLowerCase();
+      if (ID_SHAPED.test(idCandidate)) {
+        const byId = await project.store
+          .read(idCandidate)
+          .catch((error: unknown) => {
+            if (error instanceof MemoryNotFoundError) return null;
+            throw error;
+          });
+        if (!byId || byId.metadata.id !== idCandidate) {
+          return {
+            success: true,
+            forgotten: [],
+            message: `No entry has the id "${idCandidate}". Nothing was forgotten.`,
+          };
+        }
         targets = [byId];
       } else {
-        // Otherwise only entries that actually contain the query are deleted. The hybrid score
+        // Otherwise only entries that contain the query as a phrase are deleted. The hybrid score
         // cannot decide that: it is min-max normalised per call, so the best candidate always
-        // scores exactly 1.0, even for a query that matches nothing, and no minScore below 1.0
-        // ever comes back empty. A query matching nothing used to delete unrelated files (#8).
+        // scores exactly 1.0, even for a query that matches nothing (#8).
         //
         // The full-text index finds the candidates, but it is deliberately fuzzy: it expands
-        // words by stems and by stripping German prefixes, so "Vertrages" also finds "Betrages"
-        // (both index "trag"). Fine for a search, not for a delete. So every query word must also
-        // appear literally at the start of a word in the entry, case-insensitive: "soup" still
-        // matches "soups". Full-text search drops one-letter words, so "variant A" would match
-        // "variant B"; here a one-letter word has to stand as a whole word. Splitting like
-        // sanitizeFtsQuery leaves only letters, digits and "_".
-        const words = input.query
-          .toLowerCase()
-          .split(/[^\p{L}\p{N}_]+/u)
-          .filter((w) => w.length > 0);
-        const containsEveryWord = (m: Memory) => {
-          const text = `${m.metadata.title} ${m.content}`.toLowerCase();
-          return words.every((w) =>
-            new RegExp(
-              `(?<![\\p{L}\\p{N}_])${w}${w.length === 1 ? "(?![\\p{L}\\p{N}_])" : ""}`,
-              "u",
-            ).test(text),
-          );
-        };
-        const matches = (
-          await project.searchIndex.searchText(input.query, 50)
-        ).filter((r) => containsEveryWord(r.memory));
+        // words by stems and German prefixes ("Vertrages" finds "Betrages"), drops one-letter
+        // words ("variant A" searches "variant") and reads a bare OR as an operator. Fine for a
+        // search, not for a delete. So the entry's title or text must contain the query's words
+        // literally, in order, with only spaces or punctuation between them, case-insensitive. A
+        // word may continue ("soup" matches "soups"); a one-letter word must stand alone.
+        const phrase = forgetPhrase(input.query);
+        const matches = phrase
+          ? (await project.searchIndex.searchText(input.query, 500)).filter(
+              (r) =>
+                phrase.test(
+                  r.memory.metadata.title.normalize("NFC").toLowerCase(),
+                ) ||
+                phrase.test(r.memory.content.normalize("NFC").toLowerCase()),
+            )
+          : [];
         if (matches.length === 0) {
           return {
             success: true,
             forgotten: [],
-            message: `No entry matches "${input.query}". Nothing was forgotten.`,
+            message: `No entry contains "${input.query}". Nothing was forgotten.`,
           };
         }
 
