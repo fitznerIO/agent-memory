@@ -299,7 +299,11 @@ Uninstall removes the extension's table, registry row, and `ext.<name>` frontmat
 
 ## CLI
 
-All commands output JSON. Errors go to stderr with exit code 1.
+All commands output JSON — except `note`, `store`, `update` and `connect` with `--quiet`,
+which print one line (e.g. `stored dec-012 semantic/decisions/dec-012-….md`). Errors go to
+stderr with exit code 1. `--quiet` only shortens stdout: warnings such as "No memory store at …
+a new, empty one will be created" still go to stderr, and a result with `success: false` is
+printed in full.
 
 ```bash
 # Save a note
@@ -358,6 +362,7 @@ Global flags:
 --global-dir <path>   Global memory directory (default: ~/.agent-memory)
 --no-global           Disable global store
 --global              Route writes to global store
+--quiet               One line instead of JSON for note, store, update, connect
 ```
 
 ### Example output
