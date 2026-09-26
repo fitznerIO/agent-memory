@@ -75,8 +75,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   punctuation ignored) deletes exactly that entry, or nothing — also `session 3`,
   even if an entry contains those words. `gpt-5`, with no registered prefix, is
   text. A query with ids in a list or a sentence is refused — as text it matched
-  exactly the entries citing those ids. The CLI rejects a `--scope` other than
-  `entry`/`topic` and a `--query` without a value.
+  exactly the entries citing those ids. The phrase is checked against the file
+  that would be deleted, not the search index: a file edited by hand keeps its old
+  text in the index until `rebuild-index`, and on a real store `forget` deleted
+  such a file although it no longer contained the query. The candidates still
+  come from the index, so after editing files by hand run `rebuild-index`. The
+  CLI rejects a `--scope` other than `entry`/`topic` and a `--query` without a
+  value.
 - **Search no longer crashes on hyphenated queries.** `sanitizeFtsQuery` used a
   split regex (`/\b(\w+)-(\w+)\b/g`) that missed chained hyphens and non-ASCII
   words, so `"2026-08-27"` and `"NEUSTART-ÜBERGABE"` reached FTS5 with a hyphen

@@ -11,7 +11,13 @@
  * refuses anything more (#23).
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { createMemorySystem } from "../../src/index.ts";
 import type { MemorySystem } from "../../src/index.ts";
@@ -48,19 +54,24 @@ const ENTRIES = [
   "Das Deployment ist sicher",
 ];
 
-/** Contents of every entry file still on disk. */
-function entryContents(baseDir: string): string[] {
+/** Path of every entry file still on disk. */
+function entryFiles(baseDir: string): string[] {
   const out: string[] = [];
   const walk = (dir: string) => {
     for (const name of readdirSync(dir)) {
       if (name.startsWith(".")) continue; // .index, .git
       const path = join(dir, name);
       if (statSync(path).isDirectory()) walk(path);
-      else if (name.endsWith(".md")) out.push(readFileSync(path, "utf8"));
+      else if (name.endsWith(".md")) out.push(path);
     }
   };
   walk(baseDir);
   return out;
+}
+
+/** Contents of every entry file still on disk. */
+function entryContents(baseDir: string): string[] {
+  return entryFiles(baseDir).map((path) => readFileSync(path, "utf8"));
 }
 
 const remaining = (baseDir: string) =>
@@ -581,6 +592,48 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
       for (const content of entries) {
         expect(left.some((c) => c.includes(content))).toBe(true);
       }
+    },
+    TEST_TIMEOUT,
+  );
+
+  // The index is derived from the files: one edited by hand keeps its old text in the index until
+  // rebuild-index. forget checks the phrase against the file it would delete, so a file that no
+  // longer contains the query stays. The other way round is a known limit: text the index does not
+  // know yet is not found.
+  test(
+    "a stale index: a file that no longer contains the query stays; new text is not found until rebuild-index",
+    async () => {
+      const text = "The lighthouse keeper logs every ship";
+      await system.note({ content: text, type: "semantic", importance: "low" });
+      const path = entryFiles(tempDir).find((p) =>
+        readFileSync(p, "utf8").includes(text),
+      ) as string;
+      writeFileSync(
+        path,
+        `${readFileSync(path, "utf8").replaceAll("lighthouse", "harbour")}\nA pelican crossing was added by hand.\n`,
+      );
+
+      const gone = await system.forget({
+        query: "lighthouse keeper",
+        scope: "entry",
+        confirm: true,
+      });
+      expect(gone.forgotten).toEqual([]);
+      expect(gone.message).toBe(
+        'No entry contains "lighthouse keeper". Nothing was forgotten.',
+      );
+      expect(existsSync(path)).toBe(true);
+
+      const added = await system.forget({
+        query: "pelican crossing",
+        scope: "entry",
+        confirm: true,
+      });
+      expect(added.forgotten).toEqual([]);
+      expect(added.message).toBe(
+        'No entry contains "pelican crossing". Nothing was forgotten.',
+      );
+      expect(existsSync(path)).toBe(true);
     },
     TEST_TIMEOUT,
   );

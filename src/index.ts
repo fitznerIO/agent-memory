@@ -857,12 +857,23 @@ export function createMemorySystem(
             };
           }
         }
-        const matches = candidates.filter(
-          (r) =>
-            phrase?.test(
-              r.memory.metadata.title.normalize("NFC").toLowerCase(),
-            ) || phrase?.test(r.memory.content.normalize("NFC").toLowerCase()),
-        );
+        // The phrase is checked against the file that would be deleted, not the index: a file
+        // edited by hand keeps its old text in the index until rebuild-index, and forget must never
+        // delete a file that no longer contains the query. A file that is gone or cannot be read is
+        // skipped. (An entry whose new text the stale index does not know is missed.)
+        const matches: SearchResult[] = [];
+        for (const r of candidates) {
+          const file = await project.store
+            .readByPath(r.memory.filePath)
+            .catch(() => null);
+          if (!file || file.metadata.id !== r.memory.metadata.id) continue;
+          if (
+            phrase?.test(file.metadata.title.normalize("NFC").toLowerCase()) ||
+            phrase?.test(file.content.normalize("NFC").toLowerCase())
+          ) {
+            matches.push({ ...r, memory: file });
+          }
+        }
         if (matches.length === 0) {
           return {
             success: true,
