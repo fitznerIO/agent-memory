@@ -24,7 +24,10 @@ import type { SearchIndex } from "./search/types.ts";
 import { parseMarkdown, serializeMarkdown } from "./shared/markdown.ts";
 export type { MemoryConfig } from "./shared/config.ts";
 export { findProjectRoot } from "./shared/config.ts";
-import { getRegisteredKnowledgeTypes } from "./shared/knowledge-types.ts";
+import {
+  getIdPrefix,
+  getRegisteredKnowledgeTypes,
+} from "./shared/knowledge-types.ts";
 import {
   getInverseType,
   getLastModified,
@@ -34,6 +37,7 @@ import {
 } from "./shared/utils.ts";
 
 import { type MemoryConfig, createDefaultConfig } from "./shared/config.ts";
+import { MemoryNotFoundError } from "./shared/errors.ts";
 export type {
   ArchiveCandidate,
   CommitType,
@@ -272,6 +276,54 @@ function mergeExtensions(
     byName.set(e.name, e);
   }
   return [...byName.values()];
+}
+
+const WORD_CHAR = "[\\p{L}\\p{M}\\p{N}_]";
+const NON_WORD = "[^\\p{L}\\p{M}\\p{N}_]";
+
+/**
+ * Every id-like token in `query` (NFC, dashes already folded to "-"), normalised to the stored
+ * form: a registered id prefix followed by digits with any non-word characters or nothing between
+ * ("note 130", "note #130", "dec/010", "DEC‑010", "dec010" → "note-130", "dec-010", …) — the same
+ * separator class the phrase rule accepts, so no spelling of an id can reach the phrase rule — any
+ * other `letters-digits` ("gpt-5"), or a UUID. `whole` is true when the query, stripped of
+ * surrounding punctuation, is exactly one such token.
+ */
+function findIdTokens(query: string): { ids: string[]; whole: boolean } {
+  const prefixes = getRegisteredKnowledgeTypes()
+    .map((t) => getIdPrefix(t))
+    .sort((a, b) => b.length - a.length)
+    .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+  const token = new RegExp(
+    `(?<!${WORD_CHAR})(?:(${prefixes.join("|")})${NON_WORD}*(\\d+)|(\\p{L}+-\\d+)|(${uuid}))(?!${WORD_CHAR})`,
+    "giu",
+  );
+  const matches = [...query.matchAll(token)];
+  const ids = matches.map((m) =>
+    (m[1] ? `${m[1]}-${m[2]}` : (m[3] ?? m[4] ?? "")).toLowerCase(),
+  );
+  const core = query.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  return { ids, whole: matches.length === 1 && matches[0]?.[0] === core };
+}
+
+/**
+ * The phrase `forget` requires, as a regex over NFC-normalised lowercase text, or null for a query
+ * without words: the query's words, in order, as whole words, with only non-word characters
+ * between them ("variant a" does not match "variant alpha", "rat" does not match "rater").
+ * Combining marks count as part of a word, so a decomposed "Ä" is not "a" plus a boundary.
+ */
+function forgetPhrase(query: string): RegExp | null {
+  const words = query
+    .normalize("NFC")
+    .toLowerCase()
+    .split(new RegExp(`${NON_WORD}+`, "u"))
+    .filter((w) => w.length > 0);
+  if (words.length === 0) return null;
+  return new RegExp(
+    `(?<!${WORD_CHAR})${words.join(`${NON_WORD}+`)}(?!${WORD_CHAR})`,
+    "u",
+  );
 }
 
 export function createMemorySystem(
@@ -720,16 +772,99 @@ export function createMemorySystem(
         };
       }
 
-      const queryEmbedding = await embedding.embed(input.query);
-      const results = await project.searchIndex.searchHybrid(
-        input.query,
-        queryEmbedding.vector,
-        { limit: input.scope === "entry" ? 1 : 10, minScore: 0.3 },
+      let targets: Memory[];
+
+      // A query that contains an id is never treated as text. As text, "dec-010", "note 130" or
+      // "inc-007, inc-008" matched exactly the entries that cite those ids, and those were deleted
+      // while the entry meant stayed. Exactly one id — case, spaces or any dash between prefix and
+      // number, and punctuation around it such as [[…]] or "." ignored — is looked up as that id;
+      // if no entry has it, nothing is deleted. Several ids, or an id inside a sentence, are
+      // refused. v2-lite ids are found by file-name prefix, so the id in the file must match too.
+      const { ids, whole } = findIdTokens(
+        input.query.normalize("NFC").replace(/\p{Pd}/gu, "-"),
       );
+      if (ids.length > 0 && !whole) {
+        return {
+          success: false,
+          forgotten: [],
+          message: `The query contains entry ids (${ids.join(", ")}). Nothing was forgotten: forget one id at a time, e.g. --query ${ids[0]}.`,
+        };
+      }
+      const queryId = ids[0];
+      if (queryId) {
+        const byId = await project.store
+          .read(queryId)
+          .catch((error: unknown) => {
+            if (error instanceof MemoryNotFoundError) return null;
+            throw error;
+          });
+        if (!byId || byId.metadata.id !== queryId) {
+          return {
+            success: true,
+            forgotten: [],
+            message: `No entry has the id "${queryId}". Nothing was forgotten.`,
+          };
+        }
+        targets = [byId];
+      } else {
+        // Otherwise only entries that contain the query as a phrase are deleted. The hybrid score
+        // cannot decide that: it is min-max normalised per call, so the best candidate always
+        // scores exactly 1.0, even for a query that matches nothing (#8).
+        //
+        // The full-text index finds the candidates, but it is deliberately fuzzy: it expands
+        // words by stems and German prefixes ("Vertrages" finds "Betrages"), drops one-letter
+        // words ("variant A" searches "variant") and reads a bare OR as an operator. Fine for a
+        // search, not for a delete. So the entry's title or text must contain the query's words
+        // literally, as whole words, in order, with only spaces or punctuation between them,
+        // case-insensitive. The candidate list is not capped: with a cap, many near-misses
+        // ranked first could push the one real phrase match out and the answer would be wrong.
+        const phrase = forgetPhrase(input.query);
+        const matches = phrase
+          ? (
+              await project.searchIndex.searchText(
+                input.query,
+                Number.MAX_SAFE_INTEGER,
+              )
+            ).filter(
+              (r) =>
+                phrase.test(
+                  r.memory.metadata.title.normalize("NFC").toLowerCase(),
+                ) ||
+                phrase.test(r.memory.content.normalize("NFC").toLowerCase()),
+            )
+          : [];
+        if (matches.length === 0) {
+          return {
+            success: true,
+            forgotten: [],
+            message: `No entry contains "${input.query}". Nothing was forgotten.`,
+          };
+        }
+
+        // Among the matches, the hybrid ranking picks the order, so meaning still counts and not
+        // only word frequency. Matches the hybrid list does not reach keep their full-text order.
+        // The hybrid search runs at limit 10 even for a single entry: at limit 1 its pool is three
+        // deep, and the one entry containing the word could lose to its nearest vector neighbour.
+        const queryEmbedding = await embedding.embed(input.query);
+        const ranked = await project.searchIndex.searchHybrid(
+          input.query,
+          queryEmbedding.vector,
+          { limit: 10, minScore: 0 },
+        );
+        const hybridRank = new Map(
+          ranked.map((r, i) => [r.memory.metadata.id, i]),
+        );
+        const rankOf = (r: SearchResult) =>
+          hybridRank.get(r.memory.metadata.id) ?? ranked.length;
+        targets = [...matches]
+          .sort((a, b) => rankOf(a) - rankOf(b))
+          .slice(0, input.scope === "entry" ? 1 : 10)
+          .map((r) => r.memory);
+      }
 
       const forgotten: string[] = [];
-      for (const result of results) {
-        const id = result.memory.metadata.id;
+      for (const memory of targets) {
+        const id = memory.metadata.id;
         await project.store.delete(id);
         await project.searchIndex.remove(id);
         // Also remove the v2-lite knowledge row (+ its tags/connections). This
@@ -737,7 +872,7 @@ export function createMemorySystem(
         // any extension `<ext>_meta` table keyed by entry_id (Extension System
         // §5.2/§12). Without this, knowledge/ext rows would be orphaned.
         await project.searchIndex.removeKnowledge(id);
-        forgotten.push(result.memory.filePath);
+        forgotten.push(memory.filePath);
       }
 
       return {
