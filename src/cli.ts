@@ -210,7 +210,7 @@ Commands:
   search         Hybrid search across all memories
   read           Read a specific memory file
   update         Update memory content (--mode replace|append, default: replace)
-  forget         Delete the entry with that id, or entries containing the query as a phrase
+  forget         Delete one id, or the entries containing the query as a phrase (entry: 1, topic: up to 10)
   commit         Git commit pending changes
   store          Create individual knowledge file (v2-lite)
   connect        Create bidirectional connection (v2-lite)

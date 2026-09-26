@@ -37,7 +37,7 @@ import {
 } from "./shared/utils.ts";
 
 import { type MemoryConfig, createDefaultConfig } from "./shared/config.ts";
-import { MemoryNotFoundError } from "./shared/errors.ts";
+import { FullTextQueryError } from "./shared/errors.ts";
 export type {
   ArchiveCandidate,
   CommitType,
@@ -281,29 +281,57 @@ function mergeExtensions(
 const WORD_CHAR = "[\\p{L}\\p{M}\\p{N}_]";
 const NON_WORD = "[^\\p{L}\\p{M}\\p{N}_]";
 
+/** The most entries `forget --scope topic` deletes; with more it deletes nothing. */
+const FORGET_TOPIC_MAX = 10;
+/** How many ids a refusal lists before "and N more". */
+const FORGET_LISTED_IDS = 10;
+
 /**
- * Every id-like token in `query` (NFC, dashes already folded to "-"), normalised to the stored
- * form: a registered id prefix followed by digits with any non-word characters or nothing between
- * ("note 130", "note #130", "dec/010", "DEC‑010", "dec010" → "note-130", "dec-010", …) — the same
- * separator class the phrase rule accepts, so no spelling of an id can reach the phrase rule — any
- * other `letters-digits` ("gpt-5"), or a UUID. `whole` is true when the query, stripped of
- * surrounding punctuation, is exactly one such token.
+ * Digits of any script as ASCII: "١٣٠" and "１３０" become "130". Unicode encodes every set of
+ * decimal digits as a run of ten code points with the values 0 to 9, and runs that touch are whole
+ * runs, so a digit's value is its distance from the start of its stretch of digits, modulo ten.
+ */
+function asciiDigits(digits: string): string {
+  return [...digits]
+    .map((d) => {
+      const cp = d.codePointAt(0) ?? 0;
+      let start = cp;
+      while (/\p{Nd}/u.test(String.fromCodePoint(start - 1))) start--;
+      return String((cp - start) % 10);
+    })
+    .join("");
+}
+
+/**
+ * Every id in `query` (NFC), normalised to the stored form. An id is a UUID or a registered id
+ * prefix followed by digits. Between the parts may stand any non-word characters or nothing
+ * ("note 130", "note #130", "dec/010", "DEC‑010", "dec010" → "note-130", "dec-010"; a UUID with
+ * U+2011 or spaces between its groups) — the same separator class the phrase rule accepts. So no
+ * spelling of an id reaches the phrase rule, where its words would match the entries citing it.
+ * Digits of any script count ("note #١٣٠" → "note-130"). Anything else is text, "gpt-5" included.
+ * `whole` is true when the query, stripped of surrounding punctuation, is exactly one id.
  */
 function findIdTokens(query: string): { ids: string[]; whole: boolean } {
   const prefixes = getRegisteredKnowledgeTypes()
     .map((t) => getIdPrefix(t))
     .sort((a, b) => b.length - a.length)
     .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+  const sep = `${NON_WORD}*`;
+  const uuid = [8, 4, 4, 4, 12].map((n) => `([0-9a-f]{${n}})`).join(sep);
+  // The UUID comes first: "dec01234-…" is a UUID, not the id "dec-01234" followed by more text.
   const token = new RegExp(
-    `(?<!${WORD_CHAR})(?:(${prefixes.join("|")})${NON_WORD}*(\\d+)|(\\p{L}+-\\d+)|(${uuid}))(?!${WORD_CHAR})`,
+    `(?<!${WORD_CHAR})(?:${uuid}|(${prefixes.join("|")})${sep}(\\p{Nd}+))(?!${WORD_CHAR})`,
     "giu",
   );
   const matches = [...query.matchAll(token)];
   const ids = matches.map((m) =>
-    (m[1] ? `${m[1]}-${m[2]}` : (m[3] ?? m[4] ?? "")).toLowerCase(),
+    m[1]
+      ? m.slice(1, 6).join("-").toLowerCase()
+      : `${(m[6] ?? "").toLowerCase()}-${asciiDigits(m[7] ?? "")}`,
   );
-  const core = query.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  const core = query
+    .trim()
+    .replace(new RegExp(`^${NON_WORD}+|${NON_WORD}+$`, "gu"), "");
   return { ids, whole: matches.length === 1 && matches[0]?.[0] === core };
 }
 
@@ -776,13 +804,10 @@ export function createMemorySystem(
 
       // A query that contains an id is never treated as text. As text, "dec-010", "note 130" or
       // "inc-007, inc-008" matched exactly the entries that cite those ids, and those were deleted
-      // while the entry meant stayed. Exactly one id — case, spaces or any dash between prefix and
-      // number, and punctuation around it such as [[…]] or "." ignored — is looked up as that id;
-      // if no entry has it, nothing is deleted. Several ids, or an id inside a sentence, are
-      // refused. v2-lite ids are found by file-name prefix, so the id in the file must match too.
-      const { ids, whole } = findIdTokens(
-        input.query.normalize("NFC").replace(/\p{Pd}/gu, "-"),
-      );
+      // while the entry meant stayed. Exactly one id — case, any separator between its parts, and
+      // punctuation around it such as [[…]] or "." ignored — is looked up as that id; if no entry
+      // has it, nothing is deleted. Several ids, or an id inside a sentence, are refused.
+      const { ids, whole } = findIdTokens(input.query.normalize("NFC"));
       if (ids.length > 0 && !whole) {
         return {
           success: false,
@@ -792,20 +817,25 @@ export function createMemorySystem(
       }
       const queryId = ids[0];
       if (queryId) {
-        const byId = await project.store
-          .read(queryId)
-          .catch((error: unknown) => {
-            if (error instanceof MemoryNotFoundError) return null;
-            throw error;
-          });
-        if (!byId || byId.metadata.id !== queryId) {
+        // Every file whose frontmatter has the id, not the first one a directory listing returns:
+        // with two files sharing an id, that deleted whichever came first. Picking one is a choice
+        // forget does not make.
+        const paths = await project.store.findPathsById(queryId);
+        if (paths.length === 0) {
           return {
             success: true,
             forgotten: [],
-            message: `No entry has the id "${queryId}". Nothing was forgotten.`,
+            message: `No entry in the project store has the id "${queryId}". Nothing was forgotten.`,
           };
         }
-        targets = [byId];
+        if (paths.length > 1) {
+          return {
+            success: false,
+            forgotten: [],
+            message: `${paths.length} files have the id "${queryId}": ${paths.join(", ")}. Nothing was forgotten: fix the duplicate ids first.`,
+          };
+        }
+        targets = [await project.store.readByPath(paths[0] as string)];
       } else {
         // Otherwise only entries that contain the query as a phrase are deleted. The hybrid score
         // cannot decide that: it is min-max normalised per call, so the best candidate always
@@ -816,63 +846,114 @@ export function createMemorySystem(
         // words ("variant A" searches "variant") and reads a bare OR as an operator. Fine for a
         // search, not for a delete. So the entry's title or text must contain the query's words
         // literally, as whole words, in order, with only spaces or punctuation between them,
-        // case-insensitive. The candidate list is not capped: with a cap, many near-misses
-        // ranked first could push the one real phrase match out and the answer would be wrong.
+        // case-insensitive. The candidate list is not capped: the count below must be exact, and
+        // with a cap many near-misses ranked first could push a real phrase match out.
         const phrase = forgetPhrase(input.query);
-        const matches = phrase
-          ? (
-              await project.searchIndex.searchText(
-                input.query,
-                Number.MAX_SAFE_INTEGER,
-              )
-            ).filter(
-              (r) =>
-                phrase.test(
-                  r.memory.metadata.title.normalize("NFC").toLowerCase(),
-                ) ||
-                phrase.test(r.memory.content.normalize("NFC").toLowerCase()),
-            )
-          : [];
+        let candidates: SearchResult[] = [];
+        if (phrase) {
+          try {
+            candidates = await project.searchIndex.searchText(
+              input.query,
+              Number.MAX_SAFE_INTEGER,
+              { strict: true },
+            );
+          } catch (error) {
+            if (!(error instanceof FullTextQueryError)) throw error;
+            // "A" is dropped by the sanitiser, "OR" or "bread AND butter" are FTS5 syntax errors.
+            // Nothing was searched, so "No entry contains" would not be true (#23).
+            return {
+              success: false,
+              forgotten: [],
+              message: `Full-text search could not run "${input.query}", so nothing was forgotten. Try the entry id.`,
+            };
+          }
+        }
+        // The phrase is checked against the file that would be deleted, not the index: a file
+        // edited by hand keeps its old text in the index until rebuild-index, and forget must never
+        // delete a file that no longer contains the query. A file that is gone or cannot be read is
+        // skipped. (An entry whose new text the stale index does not know is missed.)
+        const matches: SearchResult[] = [];
+        for (const r of candidates) {
+          const file = await project.store
+            .readByPath(r.memory.filePath)
+            .catch(() => null);
+          if (!file || file.metadata.id !== r.memory.metadata.id) continue;
+          // A title may be missing or not a string ("title: 2026").
+          const title = String(file.metadata.title ?? "");
+          if (
+            phrase?.test(title.normalize("NFC").toLowerCase()) ||
+            phrase?.test(file.content.normalize("NFC").toLowerCase())
+          ) {
+            matches.push({ ...r, memory: file });
+          }
+        }
         if (matches.length === 0) {
           return {
             success: true,
             forgotten: [],
-            message: `No entry contains "${input.query}". Nothing was forgotten.`,
+            message: `No entry in the project store contains "${input.query}". Nothing was forgotten.`,
           };
         }
 
-        // Among the matches, the hybrid ranking picks the order, so meaning still counts and not
-        // only word frequency. Matches the hybrid list does not reach keep their full-text order.
-        // The hybrid search runs at limit 10 even for a single entry: at limit 1 its pool is three
-        // deep, and the one entry containing the word could lose to its nearest vector neighbour.
-        const queryEmbedding = await embedding.embed(input.query);
-        const ranked = await project.searchIndex.searchHybrid(
-          input.query,
-          queryEmbedding.vector,
-          { limit: 10, minScore: 0 },
-        );
-        const hybridRank = new Map(
-          ranked.map((r, i) => [r.memory.metadata.id, i]),
-        );
-        const rankOf = (r: SearchResult) =>
-          hybridRank.get(r.memory.metadata.id) ?? ranked.length;
-        targets = [...matches]
-          .sort((a, b) => rankOf(a) - rankOf(b))
-          .slice(0, input.scope === "entry" ? 1 : 10)
-          .map((r) => r.memory);
+        // forget never deletes an arbitrary selection: either the set is clear — one match for
+        // scope entry, at most ten for scope topic — or nothing is deleted and the message says
+        // what was found. Picking the "best" of several, or ten of 86, was a guess.
+        const most = input.scope === "entry" ? 1 : FORGET_TOPIC_MAX;
+        if (matches.length > most) {
+          const shown = matches
+            .slice(0, FORGET_LISTED_IDS)
+            .map((r) => r.memory.metadata.id)
+            .join(", ");
+          const more =
+            matches.length > FORGET_LISTED_IDS
+              ? ` and ${matches.length - FORGET_LISTED_IDS} more`
+              : "";
+          const found = `${matches.length} entries contain "${input.query}": ${shown}${more}.`;
+          return {
+            success: false,
+            forgotten: [],
+            message:
+              input.scope === "topic"
+                ? `${found} Nothing was forgotten: --scope topic forgets at most ${FORGET_TOPIC_MAX} entries. Forget one id, or narrow the query.`
+                : matches.length > FORGET_TOPIC_MAX
+                  ? `${found} Nothing was forgotten: forget one id, or narrow the query.`
+                  : `${found} Nothing was forgotten: forget one id, or use --scope topic.`,
+          };
+        }
+        targets = matches.map((r) => r.memory);
       }
 
+      // Delete exactly the file that was checked, not "the" file with its id: with two files
+      // sharing an id, a lookup by id deleted whichever a directory listing returned first. If a
+      // step fails, stop and say which files are already gone.
       const forgotten: string[] = [];
+      const failed = (what: string) => ({
+        success: false,
+        forgotten,
+        message: `Forgot ${forgotten.length} of ${targets.length}, then ${what}. Nothing else was deleted.`,
+      });
       for (const memory of targets) {
         const id = memory.metadata.id;
-        await project.store.delete(id);
-        await project.searchIndex.remove(id);
-        // Also remove the v2-lite knowledge row (+ its tags/connections). This
-        // deletes the `knowledge` parent row, which fires ON DELETE CASCADE on
-        // any extension `<ext>_meta` table keyed by entry_id (Extension System
-        // §5.2/§12). Without this, knowledge/ext rows would be orphaned.
-        await project.searchIndex.removeKnowledge(id);
+        try {
+          await project.store.deleteByPath(memory.filePath);
+        } catch (error) {
+          return failed(
+            `could not delete ${memory.filePath}: ${(error as Error).message}`,
+          );
+        }
         forgotten.push(memory.filePath);
+        try {
+          await project.searchIndex.remove(id);
+          // Also remove the v2-lite knowledge row (+ its tags/connections). This
+          // deletes the `knowledge` parent row, which fires ON DELETE CASCADE on
+          // any extension `<ext>_meta` table keyed by entry_id (Extension System
+          // §5.2/§12). Without this, knowledge/ext rows would be orphaned.
+          await project.searchIndex.removeKnowledge(id);
+        } catch (error) {
+          return failed(
+            `deleted ${memory.filePath} but could not remove it from the search index (${(error as Error).message}); run rebuild-index`,
+          );
+        }
       }
 
       return {

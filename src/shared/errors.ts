@@ -12,6 +12,14 @@ export class PathTraversalError extends Error {
   }
 }
 
+/** Full-text search could not run a query: nothing was left after sanitising, or FTS5 rejected it. */
+export class FullTextQueryError extends Error {
+  constructor(query: string, reason: string) {
+    super(`Full-text search could not run ${JSON.stringify(query)}: ${reason}`);
+    this.name = "FullTextQueryError";
+  }
+}
+
 export class InvalidMemoryTypeError extends Error {
   constructor(type: string) {
     super(`Invalid memory type: ${type}`);

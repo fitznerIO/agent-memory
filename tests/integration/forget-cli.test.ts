@@ -63,7 +63,7 @@ describe("forget: CLI input checks (#8)", () => {
       expect(result.exitCode).toBe(0);
       expect(result.stderr).not.toContain("Missing value");
       expect(JSON.parse(result.stdout).message).toBe(
-        'No entry contains "soup". Nothing was forgotten.',
+        'No entry in the project store contains "soup". Nothing was forgotten.',
       );
     },
     TEST_TIMEOUT,

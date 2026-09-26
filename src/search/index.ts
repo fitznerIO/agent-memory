@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { newStemmer } from "snowball-stemmers";
 import * as sqliteVec from "sqlite-vec";
 import type { MemoryConfig } from "../shared/config.ts";
+import { FullTextQueryError } from "../shared/errors.ts";
 import { getIdPrefix } from "../shared/knowledge-types.ts";
 import type {
   Connection,
@@ -565,10 +566,19 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       removeMemory(id);
     },
 
-    async searchText(query: string, limit?: number): Promise<SearchResult[]> {
+    async searchText(
+      query: string,
+      limit?: number,
+      options?: { strict?: boolean },
+    ): Promise<SearchResult[]> {
       const effectiveLimit = limit ?? config.hybridDefaults.limit;
       const sanitized = sanitizeFtsQuery(query);
-      if (!sanitized) return [];
+      if (!sanitized) {
+        if (options?.strict) {
+          throw new FullTextQueryError(query, "nothing left to search for");
+        }
+        return [];
+      }
 
       // Degrade instead of throwing — but only for a rejected MATCH expression. sanitizeFtsQuery
       // covers the parse errors we know about, and FTS5 syntax is large enough that the next
@@ -582,6 +592,9 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
         rows = searchFts.all(sanitized, effectiveLimit);
       } catch (error) {
         if (!isFtsQueryError(error)) throw error;
+        if (options?.strict) {
+          throw new FullTextQueryError(query, (error as Error).message);
+        }
         console.warn(
           `[search] FTS5 rejected query ${JSON.stringify(sanitized)}, falling back to vector-only: ${
             (error as Error).message
