@@ -12,13 +12,15 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { createMemorySystem } from "../../src/index.ts";
 import type { MemorySystem } from "../../src/index.ts";
 import { cleanupTempDir, createTempDir } from "../helpers/fixtures.ts";
@@ -353,7 +355,7 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
         for (const scope of ["entry", "topic"] as const) {
           const again = await system.forget({ query, scope, confirm: true });
           expect(again.forgotten).toEqual([]);
-          expect(again.message).toContain("No entry has the id");
+          expect(again.message).toContain("No entry in the project store has the id");
         }
       }
       expect(exists(citing.file_path)).toBe(true);
@@ -467,7 +469,7 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
         const again = await system.forget({ query, scope: "topic", confirm: true });
         expect(again.forgotten).toEqual([]);
         expect(again.message).toBe(
-          `No entry has the id "${target}". Nothing was forgotten.`,
+          `No entry in the project store has the id "${target}". Nothing was forgotten.`,
         );
       }
       expect(has(citing)).toBe(true);
@@ -480,7 +482,7 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
         confirm: true,
       });
       expect(third.message).toBe(
-        `No entry has the id "${lookalike}". Nothing was forgotten.`,
+        `No entry in the project store has the id "${lookalike}". Nothing was forgotten.`,
       );
     },
     TEST_TIMEOUT,
@@ -555,6 +557,11 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
         expect(result.message).toStartWith('12 entries contain "paper kite": ');
         expect(result.message).toContain(" and 2 more. Nothing was forgotten: ");
         expect(result.message).toEndWith("narrow the query.");
+        if (scope === "topic") {
+          expect(result.message).toContain(
+            "Nothing was forgotten: --scope topic forgets at most 10 entries.",
+          );
+        }
         expect(ids.filter((id) => result.message.includes(id))).toHaveLength(10);
       }
       expect(
@@ -620,7 +627,7 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
       });
       expect(gone.forgotten).toEqual([]);
       expect(gone.message).toBe(
-        'No entry contains "lighthouse keeper". Nothing was forgotten.',
+        'No entry in the project store contains "lighthouse keeper". Nothing was forgotten.',
       );
       expect(existsSync(path)).toBe(true);
 
@@ -631,9 +638,223 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
       });
       expect(added.forgotten).toEqual([]);
       expect(added.message).toBe(
-        'No entry contains "pelican crossing". Nothing was forgotten.',
+        'No entry in the project store contains "pelican crossing". Nothing was forgotten.',
       );
       expect(existsSync(path)).toBe(true);
+    },
+    TEST_TIMEOUT,
+  );
+
+  // Exactly ten is still clear enough for --scope topic; eleven is not.
+  test(
+    "--scope topic deletes exactly ten matches and refuses eleven",
+    async () => {
+      for (let i = 1; i <= 10; i++) {
+        await system.note({
+          content: `Glass marble number ${i} rolled away`,
+          type: "semantic",
+          importance: "low",
+        });
+      }
+      for (let i = 1; i <= 11; i++) {
+        await system.note({
+          content: `Tin soldier number ${i} stands guard`,
+          type: "semantic",
+          importance: "low",
+        });
+      }
+      const count = (text: string) =>
+        entryContents(tempDir).filter((c) => c.includes(text)).length;
+
+      const ten = await system.forget({
+        query: "glass marble",
+        scope: "topic",
+        confirm: true,
+      });
+      expect(ten.forgotten).toHaveLength(10);
+      expect(count("Glass marble number")).toBe(0);
+
+      const eleven = await system.forget({
+        query: "tin soldier",
+        scope: "topic",
+        confirm: true,
+      });
+      expect(eleven.success).toBe(false);
+      expect(eleven.message).toStartWith('11 entries contain "tin soldier": ');
+      expect(count("Tin soldier number")).toBe(11);
+    },
+    TEST_TIMEOUT,
+  );
+
+  // forget deletes exactly the file it checked. Here two files share an id and only one contains
+  // the phrase; a lookup by id finds the other one first (it scans core/ before semantic/), and
+  // forget used to delete that one.
+  test(
+    "two files share an id: the one with the phrase is deleted, not the one an id lookup finds first",
+    async () => {
+      const text = "The brass lantern hangs by the door";
+      const { noteId } = await system.note({
+        content: text,
+        type: "semantic",
+        importance: "low",
+      });
+      const path = entryFiles(tempDir).find((p) =>
+        readFileSync(p, "utf8").includes(text),
+      ) as string;
+      mkdirSync(join(tempDir, "core"), { recursive: true });
+      const twin = join(tempDir, "core", `${noteId}-twin.md`);
+      writeFileSync(
+        twin,
+        readFileSync(path, "utf8").replaceAll(text, "Nothing to see here"),
+      );
+
+      const result = await system.forget({
+        query: "brass lantern",
+        scope: "entry",
+        confirm: true,
+      });
+      expect(result.forgotten).toEqual([relative(tempDir, path)]);
+      expect(existsSync(path)).toBe(false);
+      expect(existsSync(twin)).toBe(true);
+    },
+    TEST_TIMEOUT,
+  );
+
+  // An id lookup used to pick one of two files with the same id. Picking is not forget's call.
+  test(
+    "forget by id refuses when several files have that id, and names them",
+    async () => {
+      const dec = await system.memoryStore({
+        title: "Retention decision",
+        type: "decision",
+        content: "Keep logs for 90 days.",
+      });
+      const twin = dec.file_path.replace(/\.md$/, "-copy.md");
+      writeFileSync(
+        join(tempDir, twin),
+        readFileSync(join(tempDir, dec.file_path), "utf8"),
+      );
+
+      const result = await system.forget({
+        query: dec.id,
+        scope: "entry",
+        confirm: true,
+      });
+      expect(result.success).toBe(false);
+      expect(result.forgotten).toEqual([]);
+      expect(result.message).toStartWith(`2 files have the id "${dec.id}": `);
+      expect(result.message).toContain(dec.file_path);
+      expect(result.message).toContain(twin);
+      expect(result.message).toEndWith(
+        "Nothing was forgotten: fix the duplicate ids first.",
+      );
+      expect(existsSync(join(tempDir, dec.file_path))).toBe(true);
+      expect(existsSync(join(tempDir, twin))).toBe(true);
+    },
+    TEST_TIMEOUT,
+  );
+
+  // The index row says which id is in the file. When the file says otherwise (edited by hand), the
+  // row is stale and forget leaves the file alone.
+  test(
+    "a file whose id was changed by hand is not deleted through its old index row",
+    async () => {
+      const text = "The copper kettle whistles at seven";
+      const { noteId } = await system.note({
+        content: text,
+        type: "semantic",
+        importance: "low",
+      });
+      const path = entryFiles(tempDir).find((p) =>
+        readFileSync(p, "utf8").includes(text),
+      ) as string;
+      writeFileSync(
+        path,
+        readFileSync(path, "utf8").replace(
+          `id: ${noteId}`,
+          "id: 00000000-0000-4000-8000-000000000000",
+        ),
+      );
+
+      const result = await system.forget({
+        query: "copper kettle",
+        scope: "entry",
+        confirm: true,
+      });
+      expect(result.forgotten).toEqual([]);
+      expect(existsSync(path)).toBe(true);
+    },
+    TEST_TIMEOUT,
+  );
+
+  // A title that is a number or missing must not break forget for every query that finds the file.
+  test(
+    "a title that is not text, or no title, does not break forget",
+    async () => {
+      const jug = "The pewter jug holds cider";
+      const mug = "The tin mug holds tea";
+      for (const content of [jug, mug]) {
+        await system.note({ content, type: "semantic", importance: "low" });
+      }
+      const fileWith = (text: string) =>
+        entryFiles(tempDir).find((p) =>
+          readFileSync(p, "utf8").includes(text),
+        ) as string;
+      const jugPath = fileWith(jug);
+      const mugPath = fileWith(mug);
+      writeFileSync(
+        jugPath,
+        readFileSync(jugPath, "utf8").replace(`title: ${jug}`, "title: 2026"),
+      );
+      writeFileSync(
+        mugPath,
+        readFileSync(mugPath, "utf8").replace(`title: ${mug}\n`, ""),
+      );
+
+      for (const [query, path] of [
+        ["pewter jug", jugPath],
+        ["tin mug", mugPath],
+      ] as const) {
+        const result = await system.forget({ query, scope: "entry", confirm: true });
+        expect(result.forgotten).toHaveLength(1);
+        expect(existsSync(path)).toBe(false);
+      }
+    },
+    TEST_TIMEOUT,
+  );
+
+  // If a delete fails half-way, forget stops and the answer lists exactly what is already gone.
+  test(
+    "when a delete fails, forget stops and says which files are already gone",
+    async () => {
+      await system.note({
+        content: "A silver spoon lies in the drawer",
+        type: "semantic",
+        importance: "low",
+      });
+      const dec = await system.memoryStore({
+        title: "Cutlery decision",
+        type: "decision",
+        content: "The silver spoon goes to the guest room.",
+      });
+      const decDir = dirname(join(tempDir, dec.file_path));
+      chmodSync(decDir, 0o555);
+      try {
+        const result = await system.forget({
+          query: "silver spoon",
+          scope: "topic",
+          confirm: true,
+        });
+        expect(result.success).toBe(false);
+        expect(result.message).toContain(`could not delete ${dec.file_path}`);
+        expect(result.message).toEndWith("Nothing else was deleted.");
+        expect(existsSync(join(tempDir, dec.file_path))).toBe(true);
+        for (const f of result.forgotten) {
+          expect(existsSync(join(tempDir, f))).toBe(false);
+        }
+      } finally {
+        chmodSync(decDir, 0o755);
+      }
     },
     TEST_TIMEOUT,
   );

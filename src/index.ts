@@ -37,7 +37,7 @@ import {
 } from "./shared/utils.ts";
 
 import { type MemoryConfig, createDefaultConfig } from "./shared/config.ts";
-import { FullTextQueryError, MemoryNotFoundError } from "./shared/errors.ts";
+import { FullTextQueryError } from "./shared/errors.ts";
 export type {
   ArchiveCandidate,
   CommitType,
@@ -799,8 +799,7 @@ export function createMemorySystem(
       // "inc-007, inc-008" matched exactly the entries that cite those ids, and those were deleted
       // while the entry meant stayed. Exactly one id — case, any separator between its parts, and
       // punctuation around it such as [[…]] or "." ignored — is looked up as that id; if no entry
-      // has it, nothing is deleted. Several ids, or an id inside a sentence, are refused. v2-lite
-      // ids are found by file-name prefix, so the id in the file must match too.
+      // has it, nothing is deleted. Several ids, or an id inside a sentence, are refused.
       const { ids, whole } = findIdTokens(input.query.normalize("NFC"));
       if (ids.length > 0 && !whole) {
         return {
@@ -811,20 +810,25 @@ export function createMemorySystem(
       }
       const queryId = ids[0];
       if (queryId) {
-        const byId = await project.store
-          .read(queryId)
-          .catch((error: unknown) => {
-            if (error instanceof MemoryNotFoundError) return null;
-            throw error;
-          });
-        if (!byId || byId.metadata.id !== queryId) {
+        // Every file whose frontmatter has the id, not the first one a directory listing returns:
+        // with two files sharing an id, that deleted whichever came first. Picking one is a choice
+        // forget does not make.
+        const paths = await project.store.findPathsById(queryId);
+        if (paths.length === 0) {
           return {
             success: true,
             forgotten: [],
-            message: `No entry has the id "${queryId}". Nothing was forgotten.`,
+            message: `No entry in the project store has the id "${queryId}". Nothing was forgotten.`,
           };
         }
-        targets = [byId];
+        if (paths.length > 1) {
+          return {
+            success: false,
+            forgotten: [],
+            message: `${paths.length} files have the id "${queryId}": ${paths.join(", ")}. Nothing was forgotten: fix the duplicate ids first.`,
+          };
+        }
+        targets = [await project.store.readByPath(paths[0] as string)];
       } else {
         // Otherwise only entries that contain the query as a phrase are deleted. The hybrid score
         // cannot decide that: it is min-max normalised per call, so the best candidate always
@@ -867,8 +871,10 @@ export function createMemorySystem(
             .readByPath(r.memory.filePath)
             .catch(() => null);
           if (!file || file.metadata.id !== r.memory.metadata.id) continue;
+          // A title may be missing or not a string ("title: 2026").
+          const title = String(file.metadata.title ?? "");
           if (
-            phrase?.test(file.metadata.title.normalize("NFC").toLowerCase()) ||
+            phrase?.test(title.normalize("NFC").toLowerCase()) ||
             phrase?.test(file.content.normalize("NFC").toLowerCase())
           ) {
             matches.push({ ...r, memory: file });
@@ -878,7 +884,7 @@ export function createMemorySystem(
           return {
             success: true,
             forgotten: [],
-            message: `No entry contains "${input.query}". Nothing was forgotten.`,
+            message: `No entry in the project store contains "${input.query}". Nothing was forgotten.`,
           };
         }
 
@@ -908,17 +914,37 @@ export function createMemorySystem(
         targets = matches.map((r) => r.memory);
       }
 
+      // Delete exactly the file that was checked, not "the" file with its id: with two files
+      // sharing an id, a lookup by id deleted whichever a directory listing returned first. If a
+      // step fails, stop and say which files are already gone.
       const forgotten: string[] = [];
+      const failed = (what: string) => ({
+        success: false,
+        forgotten,
+        message: `Forgot ${forgotten.length} of ${targets.length}, then ${what}. Nothing else was deleted.`,
+      });
       for (const memory of targets) {
         const id = memory.metadata.id;
-        await project.store.delete(id);
-        await project.searchIndex.remove(id);
-        // Also remove the v2-lite knowledge row (+ its tags/connections). This
-        // deletes the `knowledge` parent row, which fires ON DELETE CASCADE on
-        // any extension `<ext>_meta` table keyed by entry_id (Extension System
-        // §5.2/§12). Without this, knowledge/ext rows would be orphaned.
-        await project.searchIndex.removeKnowledge(id);
+        try {
+          await project.store.deleteByPath(memory.filePath);
+        } catch (error) {
+          return failed(
+            `could not delete ${memory.filePath}: ${(error as Error).message}`,
+          );
+        }
         forgotten.push(memory.filePath);
+        try {
+          await project.searchIndex.remove(id);
+          // Also remove the v2-lite knowledge row (+ its tags/connections). This
+          // deletes the `knowledge` parent row, which fires ON DELETE CASCADE on
+          // any extension `<ext>_meta` table keyed by entry_id (Extension System
+          // §5.2/§12). Without this, knowledge/ext rows would be orphaned.
+          await project.searchIndex.removeKnowledge(id);
+        } catch (error) {
+          return failed(
+            `deleted ${memory.filePath} but could not remove it from the search index (${(error as Error).message}); run rebuild-index`,
+          );
+        }
       }
 
       return {
