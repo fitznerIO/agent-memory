@@ -750,6 +750,29 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
       );
       expect(existsSync(join(tempDir, dec.file_path))).toBe(true);
       expect(existsSync(join(tempDir, twin))).toBe(true);
+
+      // A twin filed in another type directory counts too.
+      const other = await system.memoryStore({
+        title: "Backup window decision",
+        type: "decision",
+        content: "Backups run at two in the morning.",
+      });
+      const misfiled = `episodic/incidents/${other.id}-misfiled.md`;
+      mkdirSync(join(tempDir, "episodic", "incidents"), { recursive: true });
+      writeFileSync(
+        join(tempDir, misfiled),
+        readFileSync(join(tempDir, other.file_path), "utf8"),
+      );
+      const again = await system.forget({
+        query: other.id,
+        scope: "entry",
+        confirm: true,
+      });
+      expect(again.forgotten).toEqual([]);
+      expect(again.message).toStartWith(`2 files have the id "${other.id}": `);
+      expect(again.message).toContain(misfiled);
+      expect(existsSync(join(tempDir, other.file_path))).toBe(true);
+      expect(existsSync(join(tempDir, misfiled))).toBe(true);
     },
     TEST_TIMEOUT,
   );

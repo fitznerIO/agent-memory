@@ -263,6 +263,10 @@ describe("MemoryStore", () => {
       const uuid = "0f0e0d0c-0b0a-4908-8706-050403020100";
       writeFileSync(join(dir, "core", `${uuid}.md`), entry(uuid, "Core copy"));
       writeFileSync(join(dir, "episodic", `${uuid}-copy.md`), entry(uuid, "Episodic copy"));
+      // A v2-lite twin filed in the wrong type directory.
+      mkdirSync(join(dir, "episodic", "incidents"), { recursive: true });
+      writeFileSync(join(dir, "semantic/decisions/dec-007-right.md"), entry("dec-007", "Right"));
+      writeFileSync(join(dir, "episodic/incidents/dec-007-misfiled.md"), entry("dec-007", "Misfiled"));
       writeFileSync(join(outside, "keep.md"), entry("dec-009", "Outside"));
     });
 
@@ -284,6 +288,27 @@ describe("MemoryStore", () => {
         "episodic/0f0e0d0c-0b0a-4908-8706-050403020100-copy.md",
       ]);
       expect(await store.findPathsById("dec-003")).toEqual([]);
+      expect((await store.findPathsById("dec-007")).sort()).toEqual([
+        "episodic/incidents/dec-007-misfiled.md",
+        "semantic/decisions/dec-007-right.md",
+      ]);
+    });
+
+    test("deleteByPath refuses a sibling directory whose name starts with the store's", async () => {
+      const parent = await createTempDir();
+      const base = join(parent, "store");
+      mkdirSync(base);
+      mkdirSync(join(parent, "store-secret"));
+      writeFileSync(join(parent, "store-secret", "keep.md"), entry("dec-009", "Secret"));
+      const store = createMemoryStore({ ...config, baseDir: base });
+      try {
+        await store.deleteByPath("../store-secret/keep.md");
+        expect(true).toBe(false); // Should have thrown
+      } catch (e) {
+        expect(e instanceof PathTraversalError).toBe(true);
+      }
+      expect(existsSync(join(parent, "store-secret", "keep.md"))).toBe(true);
+      await cleanupTempDir(parent);
     });
 
     test("deleteByPath deletes exactly that file", async () => {

@@ -281,6 +281,11 @@ function mergeExtensions(
 const WORD_CHAR = "[\\p{L}\\p{M}\\p{N}_]";
 const NON_WORD = "[^\\p{L}\\p{M}\\p{N}_]";
 
+/** The most entries `forget --scope topic` deletes; with more it deletes nothing. */
+const FORGET_TOPIC_MAX = 10;
+/** How many ids a refusal lists before "and N more". */
+const FORGET_LISTED_IDS = 10;
+
 /**
  * Digits of any script as ASCII: "١٣٠" and "１３０" become "130". Unicode encodes every set of
  * decimal digits as a run of ten code points with the values 0 to 9, and runs that touch are whole
@@ -324,7 +329,9 @@ function findIdTokens(query: string): { ids: string[]; whole: boolean } {
       ? m.slice(1, 6).join("-").toLowerCase()
       : `${(m[6] ?? "").toLowerCase()}-${asciiDigits(m[7] ?? "")}`,
   );
-  const core = query.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  const core = query
+    .trim()
+    .replace(new RegExp(`^${NON_WORD}+|${NON_WORD}+$`, "gu"), "");
   return { ids, whole: matches.length === 1 && matches[0]?.[0] === core };
 }
 
@@ -891,22 +898,24 @@ export function createMemorySystem(
         // forget never deletes an arbitrary selection: either the set is clear — one match for
         // scope entry, at most ten for scope topic — or nothing is deleted and the message says
         // what was found. Picking the "best" of several, or ten of 86, was a guess.
-        const most = input.scope === "entry" ? 1 : 10;
+        const most = input.scope === "entry" ? 1 : FORGET_TOPIC_MAX;
         if (matches.length > most) {
           const shown = matches
-            .slice(0, 10)
+            .slice(0, FORGET_LISTED_IDS)
             .map((r) => r.memory.metadata.id)
             .join(", ");
           const more =
-            matches.length > 10 ? ` and ${matches.length - 10} more` : "";
+            matches.length > FORGET_LISTED_IDS
+              ? ` and ${matches.length - FORGET_LISTED_IDS} more`
+              : "";
           const found = `${matches.length} entries contain "${input.query}": ${shown}${more}.`;
           return {
             success: false,
             forgotten: [],
             message:
               input.scope === "topic"
-                ? `${found} Nothing was forgotten: --scope topic forgets at most 10 entries. Forget one id, or narrow the query.`
-                : matches.length > 10
+                ? `${found} Nothing was forgotten: --scope topic forgets at most ${FORGET_TOPIC_MAX} entries. Forget one id, or narrow the query.`
+                : matches.length > FORGET_TOPIC_MAX
                   ? `${found} Nothing was forgotten: forget one id, or narrow the query.`
                   : `${found} Nothing was forgotten: forget one id, or use --scope topic.`,
           };

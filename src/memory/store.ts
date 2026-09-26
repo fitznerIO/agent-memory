@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import type { MemoryConfig } from "../shared/config.ts";
 import {
   InvalidMemoryTypeError,
@@ -23,7 +23,11 @@ function validatePath(filePath: string, baseDir: string): void {
   const resolvedPath = resolve(filePath);
   const resolvedBase = resolve(baseDir);
 
-  if (!resolvedPath.startsWith(resolvedBase)) {
+  // With the separator: "/x/store-secret" starts with "/x/store" but is not inside it.
+  if (
+    resolvedPath !== resolvedBase &&
+    !resolvedPath.startsWith(resolvedBase + sep)
+  ) {
     throw new PathTraversalError(filePath);
   }
 }
@@ -113,40 +117,33 @@ async function findMemoryById(
 }
 
 /**
- * Every file whose frontmatter has `id`, not just the first. A v2-lite id is looked up by file
- * name (`<id>-*.md` or `<id>.md`) in its type directory, a UUID by scanning all type directories.
+ * Every file whose frontmatter has `id`, not just the first, in every type directory and its
+ * subdirectories — also a v2-lite entry filed in the wrong directory. A v2-lite id narrows the
+ * candidates by file name (`<id>-*.md` or `<id>.md`); a UUID reads every file.
  */
 async function findAllMemoriesById(
   baseDir: string,
   id: string,
 ): Promise<string[]> {
+  const named = parseV2LiteId(id)
+    ? (f: string) =>
+        f === `${id}.md` || (f.startsWith(`${id}-`) && f.endsWith(".md"))
+    : (f: string) => f.endsWith(".md");
   const candidates: string[] = [];
-  const parsed = parseV2LiteId(id);
-  if (parsed) {
-    const targetDir = join(baseDir, parsed.dir);
-    const files = await readdir(targetDir).catch(() => [] as string[]);
-    for (const f of files) {
-      if (f === `${id}.md` || (f.startsWith(`${id}-`) && f.endsWith(".md"))) {
-        candidates.push(join(targetDir, f));
-      }
-    }
-  } else {
-    for (const type of VALID_TYPES) {
-      const typeDir = join(baseDir, getTypeDir(type));
-      const entries = await readdir(typeDir, { withFileTypes: true }).catch(
-        () => [],
-      );
-      for (const entry of entries) {
-        if (entry.isFile() && entry.name.endsWith(".md")) {
-          candidates.push(join(typeDir, entry.name));
-        } else if (entry.isDirectory()) {
-          const subFiles = await readdir(join(typeDir, entry.name)).catch(
-            () => [] as string[],
-          );
-          for (const f of subFiles) {
-            if (f.endsWith(".md"))
-              candidates.push(join(typeDir, entry.name, f));
-          }
+  for (const type of VALID_TYPES) {
+    const typeDir = join(baseDir, getTypeDir(type));
+    const entries = await readdir(typeDir, { withFileTypes: true }).catch(
+      () => [],
+    );
+    for (const entry of entries) {
+      if (entry.isFile() && named(entry.name)) {
+        candidates.push(join(typeDir, entry.name));
+      } else if (entry.isDirectory()) {
+        const subFiles = await readdir(join(typeDir, entry.name)).catch(
+          () => [] as string[],
+        );
+        for (const f of subFiles) {
+          if (named(f)) candidates.push(join(typeDir, entry.name, f));
         }
       }
     }
