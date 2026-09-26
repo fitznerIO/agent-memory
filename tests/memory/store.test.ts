@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { createMemoryStore } from "../../src/memory/store.ts";
 import { parseMarkdown, serializeMarkdown } from "../../src/memory/parser.ts";
 import { InvalidMemoryTypeError, MemoryNotFoundError, PathTraversalError } from "../../src/shared/errors.ts";
@@ -236,6 +236,79 @@ describe("MemoryStore", () => {
       const store = createMemoryStore(config);
       try {
         await store.delete("nonexistent-delete-id");
+        expect(true).toBe(false); // Should have thrown
+      } catch (e) {
+        expect(e instanceof MemoryNotFoundError).toBe(true);
+      }
+    });
+  });
+
+  // forget deletes the file it checked, so it needs "this path" and "every file with this id"
+  // instead of "the first file with this id" (#24). Own directory, so list() below is unaffected.
+  describe("deleteByPath and findPathsById", () => {
+    let dir: string;
+    let outside: string;
+    const entry = (id: string, body: string) =>
+      `---\nid: ${id}\ntitle: ${body}\ntype: decision\n---\n\n${body}\n`;
+
+    beforeAll(async () => {
+      dir = await createTempDir();
+      outside = await createTempDir();
+      mkdirSync(join(dir, "semantic", "decisions"), { recursive: true });
+      mkdirSync(join(dir, "core"), { recursive: true });
+      mkdirSync(join(dir, "episodic"), { recursive: true });
+      writeFileSync(join(dir, "semantic/decisions/dec-001-first.md"), entry("dec-001", "First"));
+      writeFileSync(join(dir, "semantic/decisions/dec-001-second.md"), entry("dec-001", "Second"));
+      writeFileSync(join(dir, "semantic/decisions/dec-001-other.md"), entry("dec-002", "Other"));
+      const uuid = "0f0e0d0c-0b0a-4908-8706-050403020100";
+      writeFileSync(join(dir, "core", `${uuid}.md`), entry(uuid, "Core copy"));
+      writeFileSync(join(dir, "episodic", `${uuid}-copy.md`), entry(uuid, "Episodic copy"));
+      writeFileSync(join(outside, "keep.md"), entry("dec-009", "Outside"));
+    });
+
+    afterAll(async () => {
+      await cleanupTempDir(dir);
+      await cleanupTempDir(outside);
+    });
+
+    test("findPathsById returns every file whose frontmatter has the id", async () => {
+      const store = createMemoryStore({ ...config, baseDir: dir });
+      expect((await store.findPathsById("dec-001")).sort()).toEqual([
+        "semantic/decisions/dec-001-first.md",
+        "semantic/decisions/dec-001-second.md",
+      ]);
+      expect(
+        (await store.findPathsById("0f0e0d0c-0b0a-4908-8706-050403020100")).sort(),
+      ).toEqual([
+        "core/0f0e0d0c-0b0a-4908-8706-050403020100.md",
+        "episodic/0f0e0d0c-0b0a-4908-8706-050403020100-copy.md",
+      ]);
+      expect(await store.findPathsById("dec-003")).toEqual([]);
+    });
+
+    test("deleteByPath deletes exactly that file", async () => {
+      const store = createMemoryStore({ ...config, baseDir: dir });
+      await store.deleteByPath("semantic/decisions/dec-001-second.md");
+      expect(await store.findPathsById("dec-001")).toEqual([
+        "semantic/decisions/dec-001-first.md",
+      ]);
+    });
+
+    test("deleteByPath refuses a path outside the store and deletes nothing there", async () => {
+      const store = createMemoryStore({ ...config, baseDir: dir });
+      try {
+        await store.deleteByPath(relative(dir, join(outside, "keep.md")));
+        expect(true).toBe(false); // Should have thrown
+      } catch (e) {
+        expect(e instanceof PathTraversalError).toBe(true);
+      }
+      expect(existsSync(join(outside, "keep.md"))).toBe(true);
+    });
+
+    test("deleteByPath throws MemoryNotFoundError for a missing file", async () => {
+      const store = createMemoryStore({ ...config, baseDir: dir });
+      try {
+        await store.deleteByPath("semantic/decisions/dec-004-missing.md");
         expect(true).toBe(false); // Should have thrown
       } catch (e) {
         expect(e instanceof MemoryNotFoundError).toBe(true);

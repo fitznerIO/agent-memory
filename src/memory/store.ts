@@ -112,6 +112,53 @@ async function findMemoryById(
   return null;
 }
 
+/**
+ * Every file whose frontmatter has `id`, not just the first. A v2-lite id is looked up by file
+ * name (`<id>-*.md` or `<id>.md`) in its type directory, a UUID by scanning all type directories.
+ */
+async function findAllMemoriesById(
+  baseDir: string,
+  id: string,
+): Promise<string[]> {
+  const candidates: string[] = [];
+  const parsed = parseV2LiteId(id);
+  if (parsed) {
+    const targetDir = join(baseDir, parsed.dir);
+    const files = await readdir(targetDir).catch(() => [] as string[]);
+    for (const f of files) {
+      if (f === `${id}.md` || (f.startsWith(`${id}-`) && f.endsWith(".md"))) {
+        candidates.push(join(targetDir, f));
+      }
+    }
+  } else {
+    for (const type of VALID_TYPES) {
+      const typeDir = join(baseDir, getTypeDir(type));
+      const entries = await readdir(typeDir, { withFileTypes: true }).catch(
+        () => [],
+      );
+      for (const entry of entries) {
+        if (entry.isFile() && entry.name.endsWith(".md")) {
+          candidates.push(join(typeDir, entry.name));
+        } else if (entry.isDirectory()) {
+          const subFiles = await readdir(join(typeDir, entry.name)).catch(
+            () => [] as string[],
+          );
+          for (const f of subFiles) {
+            if (f.endsWith(".md"))
+              candidates.push(join(typeDir, entry.name, f));
+          }
+        }
+      }
+    }
+  }
+  const matches: string[] = [];
+  for (const filePath of candidates) {
+    const memory = await readMemoryFile(filePath).catch(() => null);
+    if (memory?.metadata.id === id) matches.push(filePath);
+  }
+  return matches;
+}
+
 export function createMemoryStore(config: MemoryConfig): MemoryStore {
   return {
     async create(input) {
@@ -224,6 +271,21 @@ export function createMemoryStore(config: MemoryConfig): MemoryStore {
 
       const file = Bun.file(filePath);
       await file.delete();
+    },
+
+    async deleteByPath(filePath) {
+      const resolvedPath = resolve(config.baseDir, filePath);
+      validatePath(resolvedPath, config.baseDir);
+      const file = Bun.file(resolvedPath);
+      if (!(await file.exists())) {
+        throw new MemoryNotFoundError(filePath);
+      }
+      await file.delete();
+    },
+
+    async findPathsById(id) {
+      const paths = await findAllMemoriesById(config.baseDir, id);
+      return paths.map((p) => relative(config.baseDir, p));
     },
 
     async list(filter?: MemoryFilter) {
