@@ -298,29 +298,31 @@ function asciiDigits(digits: string): string {
 }
 
 /**
- * Every id-like token in `query` (NFC, dashes already folded to "-"), normalised to the stored
- * form: a registered id prefix followed by digits with any non-word characters or nothing between
- * ("note 130", "note #130", "dec/010", "DEC‑010", "dec010" → "note-130", "dec-010", …) — the same
- * separator class the phrase rule accepts, so no spelling of an id can reach the phrase rule — any
- * other `letters-digits` ("gpt-5"), or a UUID. Digits of any script count ("note #١٣٠" →
- * "note-130"). `whole` is true when the query, stripped of surrounding punctuation, is exactly one
- * such token.
+ * Every id in `query` (NFC), normalised to the stored form. An id is a UUID or a registered id
+ * prefix followed by digits. Between the parts may stand any non-word characters or nothing
+ * ("note 130", "note #130", "dec/010", "DEC‑010", "dec010" → "note-130", "dec-010"; a UUID with
+ * U+2011 or spaces between its groups) — the same separator class the phrase rule accepts. So no
+ * spelling of an id reaches the phrase rule, where its words would match the entries citing it.
+ * Digits of any script count ("note #١٣٠" → "note-130"). Anything else is text, "gpt-5" included.
+ * `whole` is true when the query, stripped of surrounding punctuation, is exactly one id.
  */
 function findIdTokens(query: string): { ids: string[]; whole: boolean } {
   const prefixes = getRegisteredKnowledgeTypes()
     .map((t) => getIdPrefix(t))
     .sort((a, b) => b.length - a.length)
     .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+  const sep = `${NON_WORD}*`;
+  const uuid = [8, 4, 4, 4, 12].map((n) => `([0-9a-f]{${n}})`).join(sep);
+  // The UUID comes first: "dec01234-…" is a UUID, not the id "dec-01234" followed by more text.
   const token = new RegExp(
-    `(?<!${WORD_CHAR})(?:(${prefixes.join("|")})${NON_WORD}*(\\p{Nd}+)|(\\p{L}+-\\d+)|(${uuid}))(?!${WORD_CHAR})`,
+    `(?<!${WORD_CHAR})(?:${uuid}|(${prefixes.join("|")})${sep}(\\p{Nd}+))(?!${WORD_CHAR})`,
     "giu",
   );
   const matches = [...query.matchAll(token)];
   const ids = matches.map((m) =>
     m[1]
-      ? `${m[1].toLowerCase()}-${asciiDigits(m[2] ?? "")}`
-      : (m[3] ?? m[4] ?? "").toLowerCase(),
+      ? m.slice(1, 6).join("-").toLowerCase()
+      : `${(m[6] ?? "").toLowerCase()}-${asciiDigits(m[7] ?? "")}`,
   );
   const core = query.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
   return { ids, whole: matches.length === 1 && matches[0]?.[0] === core };
@@ -795,13 +797,11 @@ export function createMemorySystem(
 
       // A query that contains an id is never treated as text. As text, "dec-010", "note 130" or
       // "inc-007, inc-008" matched exactly the entries that cite those ids, and those were deleted
-      // while the entry meant stayed. Exactly one id — case, spaces or any dash between prefix and
-      // number, and punctuation around it such as [[…]] or "." ignored — is looked up as that id;
-      // if no entry has it, nothing is deleted. Several ids, or an id inside a sentence, are
-      // refused. v2-lite ids are found by file-name prefix, so the id in the file must match too.
-      const { ids, whole } = findIdTokens(
-        input.query.normalize("NFC").replace(/\p{Pd}/gu, "-"),
-      );
+      // while the entry meant stayed. Exactly one id — case, any separator between its parts, and
+      // punctuation around it such as [[…]] or "." ignored — is looked up as that id; if no entry
+      // has it, nothing is deleted. Several ids, or an id inside a sentence, are refused. v2-lite
+      // ids are found by file-name prefix, so the id in the file must match too.
+      const { ids, whole } = findIdTokens(input.query.normalize("NFC"));
       if (ids.length > 0 && !whole) {
         return {
           success: false,

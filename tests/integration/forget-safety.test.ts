@@ -336,8 +336,6 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
         "dec#003",
         "dec #\u0660\u0660\u0664", // Arabic-Indic digits: dec-004 again
         "dec-1",
-        "decision-001",
-        "decision‑001", // no registered prefix: only the dash folding makes this an id
         "dec-2",
       ]) {
         for (const scope of ["entry", "topic"] as const) {
@@ -394,6 +392,84 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
         confirm: true,
       });
       expect(result.forgotten).toEqual([entry.file_path]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  // Only a registered prefix makes an id. "gpt-5" or "GLM-5" are text like any other words, so
+  // "gpt-5" and "gpt−5" (U+2212) behave the same: they delete the one entry containing them.
+  test(
+    "letters, a dash and a number without a registered prefix are text",
+    async () => {
+      const gpt = "The new model gpt-5 is fast";
+      const glm = "Old notes on glm-5 benchmarks";
+      for (const content of [gpt, glm]) {
+        await system.note({ content, type: "semantic", importance: "low" });
+      }
+      const has = (text: string) =>
+        entryContents(tempDir).some((c) => c.includes(text));
+
+      const first = await system.forget({
+        query: "gpt\u22125",
+        scope: "entry",
+        confirm: true,
+      });
+      expect(first.forgotten).toHaveLength(1);
+      expect(has(gpt)).toBe(false);
+
+      const second = await system.forget({
+        query: "GLM-5",
+        scope: "entry",
+        confirm: true,
+      });
+      expect(second.forgotten).toHaveLength(1);
+      expect(has(glm)).toBe(false);
+    },
+    TEST_TIMEOUT,
+  );
+
+  // A UUID is an id with any separator between its groups, like a prefixed id. As text, its groups
+  // would match every entry that cites the UUID with plain hyphens, and that entry would go.
+  test(
+    "a UUID with any separator between its groups is an id; the entry citing it stays",
+    async () => {
+      const { noteId: target } = await system.note({
+        content: "Fennel seeds go into the sausage mix",
+        type: "semantic",
+        importance: "low",
+      });
+      const citing = `See ${target} for the sausage recipe`;
+      await system.note({ content: citing, type: "semantic", importance: "low" });
+      const has = (text: string) =>
+        entryContents(tempDir).some((c) => c.includes(text));
+
+      const first = await system.forget({
+        query: target.replaceAll("-", "\u2011"),
+        scope: "entry",
+        confirm: true,
+      });
+      expect(first.forgotten).toHaveLength(1);
+      expect(has("Fennel seeds go into the sausage mix")).toBe(false);
+
+      for (const query of [target.replaceAll("-", " "), target.replaceAll("-", "")]) {
+        const again = await system.forget({ query, scope: "topic", confirm: true });
+        expect(again.forgotten).toEqual([]);
+        expect(again.message).toBe(
+          `No entry has the id "${target}". Nothing was forgotten.`,
+        );
+      }
+      expect(has(citing)).toBe(true);
+
+      // A UUID that starts like a prefixed id is still one UUID, not "dec-01234" and more.
+      const lookalike = "dec01234-5678-4abc-8def-0123456789ab";
+      const third = await system.forget({
+        query: lookalike,
+        scope: "entry",
+        confirm: true,
+      });
+      expect(third.message).toBe(
+        `No entry has the id "${lookalike}". Nothing was forgotten.`,
+      );
     },
     TEST_TIMEOUT,
   );
