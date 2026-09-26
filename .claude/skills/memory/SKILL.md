@@ -89,8 +89,11 @@ bunx agent-memory update --path "semantic/abc.md" --content "New content" --reas
 bunx agent-memory forget --query "what to forget" --scope entry --confirm
 ```
 
-- `--query` (required): What to forget
-- `--scope`: `entry` (single best match) or `topic` (all related) — default: entry
+- `--query` (required): an entry id (`dec-012`, `note 130`, a UUID), or a phrase the entries
+  contain word for word
+- `--scope`: `entry` (the one entry with that id or phrase) or `topic` (up to 10 entries
+  containing the phrase) — default: entry. With more matches nothing is deleted; the answer
+  lists the ids, so forget the one you mean by its id
 - `--confirm` (required): Must be present to actually delete
 
 ### commit — Save to git

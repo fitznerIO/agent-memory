@@ -6,8 +6,9 @@
  * even for a query that matches nothing. A query matching no entry deleted six unrelated files.
  *
  * These tests call forget() itself on a real store with real embeddings. The tests share one
- * store and run in order: the first two delete nothing, then one entry, three entries, and one
- * entry by its id.
+ * store and run in order; the later ones add the entries they need. forget never picks: it deletes
+ * one id, the one entry (scope entry) or up to ten entries (scope topic) containing the phrase, and
+ * refuses anything more (#23).
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
