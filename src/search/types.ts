@@ -27,7 +27,16 @@ export interface SearchIndex {
   // v1 methods (unchanged)
   index(memory: Memory): Promise<void>;
   remove(id: string): Promise<void>;
-  searchText(query: string, limit?: number): Promise<SearchResult[]>;
+  /**
+   * Full-text search. A query that cannot run (nothing left after sanitising, or rejected by FTS5)
+   * returns [] so that hybrid search falls back to vectors — or, with `strict`, throws
+   * `FullTextQueryError`, for callers that must tell "found nothing" from "could not search".
+   */
+  searchText(
+    query: string,
+    limit?: number,
+    options?: { strict?: boolean },
+  ): Promise<SearchResult[]>;
   searchVector(vector: Float32Array, limit?: number): Promise<SearchResult[]>;
   searchHybrid(
     query: string,
