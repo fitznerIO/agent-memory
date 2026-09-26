@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import type { MemoryConfig } from "../shared/config.ts";
 import {
   InvalidMemoryTypeError,
@@ -23,7 +23,11 @@ function validatePath(filePath: string, baseDir: string): void {
   const resolvedPath = resolve(filePath);
   const resolvedBase = resolve(baseDir);
 
-  if (!resolvedPath.startsWith(resolvedBase)) {
+  // With the separator: "/x/store-secret" starts with "/x/store" but is not inside it.
+  if (
+    resolvedPath !== resolvedBase &&
+    !resolvedPath.startsWith(resolvedBase + sep)
+  ) {
     throw new PathTraversalError(filePath);
   }
 }
@@ -110,6 +114,46 @@ async function findMemoryById(
     }
   }
   return null;
+}
+
+/**
+ * Every file whose frontmatter has `id`, not just the first, in every type directory and its
+ * subdirectories — also a v2-lite entry filed in the wrong directory. A v2-lite id narrows the
+ * candidates by file name (`<id>-*.md` or `<id>.md`); a UUID reads every file.
+ */
+async function findAllMemoriesById(
+  baseDir: string,
+  id: string,
+): Promise<string[]> {
+  const named = parseV2LiteId(id)
+    ? (f: string) =>
+        f === `${id}.md` || (f.startsWith(`${id}-`) && f.endsWith(".md"))
+    : (f: string) => f.endsWith(".md");
+  const candidates: string[] = [];
+  for (const type of VALID_TYPES) {
+    const typeDir = join(baseDir, getTypeDir(type));
+    const entries = await readdir(typeDir, { withFileTypes: true }).catch(
+      () => [],
+    );
+    for (const entry of entries) {
+      if (entry.isFile() && named(entry.name)) {
+        candidates.push(join(typeDir, entry.name));
+      } else if (entry.isDirectory()) {
+        const subFiles = await readdir(join(typeDir, entry.name)).catch(
+          () => [] as string[],
+        );
+        for (const f of subFiles) {
+          if (named(f)) candidates.push(join(typeDir, entry.name, f));
+        }
+      }
+    }
+  }
+  const matches: string[] = [];
+  for (const filePath of candidates) {
+    const memory = await readMemoryFile(filePath).catch(() => null);
+    if (memory?.metadata.id === id) matches.push(filePath);
+  }
+  return matches;
 }
 
 export function createMemoryStore(config: MemoryConfig): MemoryStore {
@@ -224,6 +268,21 @@ export function createMemoryStore(config: MemoryConfig): MemoryStore {
 
       const file = Bun.file(filePath);
       await file.delete();
+    },
+
+    async deleteByPath(filePath) {
+      const resolvedPath = resolve(config.baseDir, filePath);
+      validatePath(resolvedPath, config.baseDir);
+      const file = Bun.file(resolvedPath);
+      if (!(await file.exists())) {
+        throw new MemoryNotFoundError(filePath);
+      }
+      await file.delete();
+    },
+
+    async findPathsById(id) {
+      const paths = await findAllMemoriesById(config.baseDir, id);
+      return paths.map((p) => relative(config.baseDir, p));
     },
 
     async list(filter?: MemoryFilter) {

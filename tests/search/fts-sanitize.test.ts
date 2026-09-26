@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { createSearchIndex } from "../../src/search/index.ts";
 import type { SearchIndex } from "../../src/search/types.ts";
 import type { MemoryConfig } from "../../src/shared/config.ts";
+import { FullTextQueryError } from "../../src/shared/errors.ts";
 import type { Memory } from "../../src/shared/types.ts";
 
 const DIMS = 384;
@@ -122,6 +123,39 @@ describe("sanitizeFtsQuery — hyphen handling (inc-005)", () => {
     for (const q of ['"unbalanced', "NEAR/", "col:*", "AND OR NOT"]) {
       const results = await idx.searchText(q);
       expect(Array.isArray(results)).toBe(true);
+    }
+  });
+
+  // forget() must tell "found nothing" from "could not search" (#23): the sanitiser drops a
+  // one-letter query, FTS5 rejects a bare OR or an AND between words. With `strict`, such a query
+  // throws instead of returning [].
+  test("strict: a query that cannot run throws FullTextQueryError", async () => {
+    for (const q of ["A", "OR", "bread AND butter", "AND OR NOT"]) {
+      await expect(
+        idx.searchText(q, 10, { strict: true }),
+      ).rejects.toBeInstanceOf(FullTextQueryError);
+    }
+  });
+
+  test("strict: a query that can run returns its results as before", async () => {
+    const results = await idx.searchText("Tagesplan", 10, { strict: true });
+    expect(results.map((r) => r.memory.metadata.id)).toContain("ep-001");
+  });
+
+  // Without `strict` nothing changes: hybrid search still falls back to the vector side.
+  test("without strict, hybrid search still falls back to vectors for a query that cannot run", async () => {
+    const vector = new Float32Array(DIMS);
+    vector[0] = 1;
+    await idx.index({
+      ...makeMemory("ep-003", "Plan B for the weekend", "Plan"),
+      embedding: vector,
+    } as Memory);
+    for (const q of ["A", "OR", "bread AND butter"]) {
+      const results = await idx.searchHybrid(q, vector, {
+        limit: 5,
+        minScore: 0,
+      });
+      expect(results.map((r) => r.memory.metadata.id)).toContain("ep-003");
     }
   });
 });

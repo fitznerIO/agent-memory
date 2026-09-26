@@ -55,24 +55,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Every write location is checked — the project store (also via `--project-dir` /
   `--base-dir`), the search index (`--sqlite-path`) and the global store
   (`--global-dir`) — with symlinks resolved.
-- **`forget` only deletes entries that contain the query** (#8). It used to delete
-  every hybrid search result above `minScore 0.3`, but that score is min-max
-  normalised per call, so the best candidate always scored 1.0 — a query that
-  matched nothing still deleted up to ten unrelated files, and `--scope entry`
+- **`forget` only deletes entries that contain the query** (#8, #23). It used to
+  delete every hybrid search result above `minScore 0.3`, but that score is
+  min-max normalised per call, so the best candidate always scored 1.0 — a query
+  that matched nothing still deleted up to ten unrelated files, and `--scope entry`
   searched at limit 1, where the one entry containing the word could lose to its
   nearest vector neighbour. Candidates now have to be full-text matches whose title
   or text also contains the query as a phrase — its words as whole words, in
   order, only spaces or punctuation between them, case-insensitive. Full-text
   search alone expands German prefixes (`Vertrages` would have matched
-  `Betrages`), drops one-letter words and reads a bare `OR` as an operator. Among
-  the candidates the hybrid ranking picks the order. A query that matches nothing
-  deletes nothing and says so. A query that is one entry id (`dec-012`, `note 130`,
-  `DEC‑012`, `note #130`, a UUID; case, any spaces or punctuation between prefix
-  and number, and surrounding punctuation ignored) deletes exactly that entry, or
-  nothing — also `session 3`, even if an entry contains those words; a query with
-  ids in a list or a sentence is refused — as text it matched exactly the entries
-  citing those ids. The CLI rejects a `--scope` other
-  than `entry`/`topic` and a `--query` without a value.
+  `Betrages`), drops one-letter words and reads a bare `OR` as an operator.
+  `forget` never picks from the matches: `--scope entry` deletes the one matching
+  entry, `--scope topic` up to ten. With more, nothing is deleted and the message
+  gives the count and up to ten ids. A query that matches nothing deletes nothing
+  and says so; one that full-text search cannot run (`A`, `OR`, `bread AND
+  butter`) deletes nothing and says that. A query that is one entry id
+  (`dec-012`, `note 130`, `DEC‑012`, `note #130`, `note #١٣٠`, a UUID; case, any
+  spaces or punctuation between the parts, digits of any script and surrounding
+  punctuation ignored) deletes exactly that entry, or nothing — also `session 3`,
+  even if an entry contains those words. `gpt-5`, with no registered prefix, is
+  text. A query with ids in a list or a sentence is refused — as text it matched
+  exactly the entries citing those ids. If several files carry the id, in any type
+  directory, nothing is deleted and the message names them — an id lookup used to
+  take whichever file a directory listing returned first. `forget` deletes exactly the file it checked;
+  with two files sharing an id it used to check one and delete the other. The
+  phrase is checked against the file that would be deleted, not the search
+  index: a file edited by hand keeps its old text in the index until
+  `rebuild-index`, and on a real store `forget` deleted such a file although it
+  no longer contained the query. The candidates still come from the index, so
+  after editing files by hand run `rebuild-index`. If a delete fails half-way,
+  `forget` stops and says which files are already gone (`Forgot 1 of 2, then could
+  not delete …`) instead of throwing. A title that is not text (`title: 2026`) or
+  missing no longer breaks it. `forget` works on the project store only. The CLI rejects a `--scope` other than `entry`/`topic` and a
+  `--query` without a value.
+- **The store's path check needs a directory separator.** It only asked whether
+  a path started with the store directory, so for a store at `/x/store` it let
+  `../store-secret/keep.md` through. That reached `readByPath` and the new
+  `deleteByPath`; `forget` itself never builds such a path.
 - **Search no longer crashes on hyphenated queries.** `sanitizeFtsQuery` used a
   split regex (`/\b(\w+)-(\w+)\b/g`) that missed chained hyphens and non-ASCII
   words, so `"2026-08-27"` and `"NEUSTART-ÜBERGABE"` reached FTS5 with a hyphen
