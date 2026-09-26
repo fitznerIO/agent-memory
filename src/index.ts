@@ -37,7 +37,7 @@ import {
 } from "./shared/utils.ts";
 
 import { type MemoryConfig, createDefaultConfig } from "./shared/config.ts";
-import { MemoryNotFoundError } from "./shared/errors.ts";
+import { FullTextQueryError, MemoryNotFoundError } from "./shared/errors.ts";
 export type {
   ArchiveCandidate,
   CommitType,
@@ -816,23 +816,34 @@ export function createMemorySystem(
         // words ("variant A" searches "variant") and reads a bare OR as an operator. Fine for a
         // search, not for a delete. So the entry's title or text must contain the query's words
         // literally, as whole words, in order, with only spaces or punctuation between them,
-        // case-insensitive. The candidate list is not capped: with a cap, many near-misses
-        // ranked first could push the one real phrase match out and the answer would be wrong.
+        // case-insensitive. The candidate list is not capped: the count below must be exact, and
+        // with a cap many near-misses ranked first could push a real phrase match out.
         const phrase = forgetPhrase(input.query);
-        const matches = phrase
-          ? (
-              await project.searchIndex.searchText(
-                input.query,
-                Number.MAX_SAFE_INTEGER,
-              )
-            ).filter(
-              (r) =>
-                phrase.test(
-                  r.memory.metadata.title.normalize("NFC").toLowerCase(),
-                ) ||
-                phrase.test(r.memory.content.normalize("NFC").toLowerCase()),
-            )
-          : [];
+        let candidates: SearchResult[] = [];
+        if (phrase) {
+          try {
+            candidates = await project.searchIndex.searchText(
+              input.query,
+              Number.MAX_SAFE_INTEGER,
+              { strict: true },
+            );
+          } catch (error) {
+            if (!(error instanceof FullTextQueryError)) throw error;
+            // "A" is dropped by the sanitiser, "OR" or "bread AND butter" are FTS5 syntax errors.
+            // Nothing was searched, so "No entry contains" would not be true (#23).
+            return {
+              success: false,
+              forgotten: [],
+              message: `Full-text search could not run "${input.query}", so nothing was forgotten. Try the entry id.`,
+            };
+          }
+        }
+        const matches = candidates.filter(
+          (r) =>
+            phrase?.test(
+              r.memory.metadata.title.normalize("NFC").toLowerCase(),
+            ) || phrase?.test(r.memory.content.normalize("NFC").toLowerCase()),
+        );
         if (matches.length === 0) {
           return {
             success: true,
@@ -841,25 +852,30 @@ export function createMemorySystem(
           };
         }
 
-        // Among the matches, the hybrid ranking picks the order, so meaning still counts and not
-        // only word frequency. Matches the hybrid list does not reach keep their full-text order.
-        // The hybrid search runs at limit 10 even for a single entry: at limit 1 its pool is three
-        // deep, and the one entry containing the word could lose to its nearest vector neighbour.
-        const queryEmbedding = await embedding.embed(input.query);
-        const ranked = await project.searchIndex.searchHybrid(
-          input.query,
-          queryEmbedding.vector,
-          { limit: 10, minScore: 0 },
-        );
-        const hybridRank = new Map(
-          ranked.map((r, i) => [r.memory.metadata.id, i]),
-        );
-        const rankOf = (r: SearchResult) =>
-          hybridRank.get(r.memory.metadata.id) ?? ranked.length;
-        targets = [...matches]
-          .sort((a, b) => rankOf(a) - rankOf(b))
-          .slice(0, input.scope === "entry" ? 1 : 10)
-          .map((r) => r.memory);
+        // forget never deletes an arbitrary selection: either the set is clear — one match for
+        // scope entry, at most ten for scope topic — or nothing is deleted and the message says
+        // what was found. Picking the "best" of several, or ten of 86, was a guess.
+        const most = input.scope === "entry" ? 1 : 10;
+        if (matches.length > most) {
+          const shown = matches
+            .slice(0, 10)
+            .map((r) => r.memory.metadata.id)
+            .join(", ");
+          const more =
+            matches.length > 10 ? ` and ${matches.length - 10} more` : "";
+          const found = `${matches.length} entries contain "${input.query}": ${shown}${more}.`;
+          return {
+            success: false,
+            forgotten: [],
+            message:
+              input.scope === "topic"
+                ? `${found} Nothing was forgotten: --scope topic forgets at most 10 entries. Forget one id, or narrow the query.`
+                : matches.length > 10
+                  ? `${found} Nothing was forgotten: forget one id, or narrow the query.`
+                  : `${found} Nothing was forgotten: forget one id, or use --scope topic.`,
+          };
+        }
+        targets = matches.map((r) => r.memory);
       }
 
       const forgotten: string[] = [];

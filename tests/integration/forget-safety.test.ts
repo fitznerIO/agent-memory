@@ -379,29 +379,112 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
     TEST_TIMEOUT,
   );
 
-  // When several entries contain the phrase, the hybrid ranking picks the one to delete. The dog
-  // entry says "hot" and "dog" more often in fewer words, so full-text search ranks it first; the
-  // snack entry is closer in meaning to "hot dog" (cosine 0.82 against 0.60), and hybrid ranks it
-  // first. Taking the matches in full-text order would delete the dog entry.
+  // forget never picks from several matches. Two entries contain "hot dog": --scope entry deletes
+  // neither and names both, --scope topic deletes both. (Before, the hybrid ranking picked one.)
   test(
-    "with several matches, --scope entry deletes the best match by meaning, not the first full-text hit",
+    "--scope entry with several matches deletes nothing and names them; --scope topic deletes them",
     async () => {
       const dog = "Our dog was hot, a hot dog pants, so the dog stays in the shade";
       const snack = "Lunch from the street stand: a hot dog in a soft bun with mustard";
+      const ids: string[] = [];
       for (const content of [dog, snack]) {
-        await system.note({ content, type: "semantic", importance: "low" });
+        const { noteId } = await system.note({
+          content,
+          type: "semantic",
+          importance: "low",
+        });
+        ids.push(noteId);
       }
+      const hotDogEntries = () =>
+        entryContents(tempDir).filter((c) => c.includes(dog) || c.includes(snack));
 
-      const result = await system.forget({
+      const entry = await system.forget({
         query: "hot dog",
         scope: "entry",
         confirm: true,
       });
+      expect(entry.success).toBe(false);
+      expect(entry.forgotten).toEqual([]);
+      expect(entry.message).toStartWith('2 entries contain "hot dog": ');
+      for (const id of ids) expect(entry.message).toContain(id);
+      expect(entry.message).toEndWith(
+        "Nothing was forgotten: forget one id, or use --scope topic.",
+      );
+      expect(hotDogEntries()).toHaveLength(2);
 
-      expect(result.forgotten).toHaveLength(1);
+      const topic = await system.forget({
+        query: "hot dog",
+        scope: "topic",
+        confirm: true,
+      });
+      expect(topic.forgotten).toHaveLength(2);
+      expect(hotDogEntries()).toHaveLength(0);
+    },
+    TEST_TIMEOUT,
+  );
+
+  // --scope topic deletes at most ten. With more matches it used to delete ten of them, chosen by
+  // rank; now it deletes nothing and gives the count and the first ten ids. --scope entry, too.
+  test(
+    "more than ten matches: nothing is deleted in either scope; the message gives the count and ten ids",
+    async () => {
+      const ids: string[] = [];
+      for (let i = 1; i <= 12; i++) {
+        const { noteId } = await system.note({
+          content: `Paper kite number ${i} for the beach festival`,
+          type: "semantic",
+          importance: "low",
+        });
+        ids.push(noteId);
+      }
+      for (const scope of ["entry", "topic"] as const) {
+        const result = await system.forget({
+          query: "paper kite",
+          scope,
+          confirm: true,
+        });
+        expect(result.success).toBe(false);
+        expect(result.forgotten).toEqual([]);
+        expect(result.message).toStartWith('12 entries contain "paper kite": ');
+        expect(result.message).toContain(" and 2 more. Nothing was forgotten: ");
+        expect(result.message).toEndWith("narrow the query.");
+        expect(ids.filter((id) => result.message.includes(id))).toHaveLength(10);
+      }
+      expect(
+        entryContents(tempDir).filter((c) => c.includes("Paper kite number")),
+      ).toHaveLength(12);
+    },
+    TEST_TIMEOUT,
+  );
+
+  // Full-text search cannot run every query: the sanitiser drops "A", FTS5 rejects a bare "OR" and
+  // "bread AND butter". Nothing is deleted, and the message says why instead of claiming that no
+  // entry contains the query — each of these entries does (#23).
+  test(
+    "a query full-text search cannot run deletes nothing and says so",
+    async () => {
+      const entries = [
+        "Bread and butter pudding for Sunday",
+        "Plan A failed, so we switched",
+        "Keep this OR that",
+      ];
+      for (const content of entries) {
+        await system.note({ content, type: "semantic", importance: "low" });
+      }
+      for (const query of ["bread AND butter", "A", "OR"]) {
+        for (const scope of ["entry", "topic"] as const) {
+          const result = await system.forget({ query, scope, confirm: true });
+          expect(result.success).toBe(false);
+          expect(result.forgotten).toEqual([]);
+          expect(result.message).toBe(
+            `Full-text search could not run "${query}", so nothing was forgotten. Try the entry id.`,
+          );
+        }
+      }
       const left = entryContents(tempDir);
-      expect(left.some((c) => c.includes(snack))).toBe(false);
-      expect(left.some((c) => c.includes(dog))).toBe(true);
+      for (const content of entries) {
+        expect(left.some((c) => c.includes(content))).toBe(true);
+      }
     },
     TEST_TIMEOUT,
   );
