@@ -282,12 +282,29 @@ const WORD_CHAR = "[\\p{L}\\p{M}\\p{N}_]";
 const NON_WORD = "[^\\p{L}\\p{M}\\p{N}_]";
 
 /**
+ * Digits of any script as ASCII: "١٣٠" and "１３０" become "130". Unicode encodes every set of
+ * decimal digits as a run of ten code points with the values 0 to 9, and runs that touch are whole
+ * runs, so a digit's value is its distance from the start of its stretch of digits, modulo ten.
+ */
+function asciiDigits(digits: string): string {
+  return [...digits]
+    .map((d) => {
+      const cp = d.codePointAt(0) ?? 0;
+      let start = cp;
+      while (/\p{Nd}/u.test(String.fromCodePoint(start - 1))) start--;
+      return String((cp - start) % 10);
+    })
+    .join("");
+}
+
+/**
  * Every id-like token in `query` (NFC, dashes already folded to "-"), normalised to the stored
  * form: a registered id prefix followed by digits with any non-word characters or nothing between
  * ("note 130", "note #130", "dec/010", "DEC‑010", "dec010" → "note-130", "dec-010", …) — the same
  * separator class the phrase rule accepts, so no spelling of an id can reach the phrase rule — any
- * other `letters-digits` ("gpt-5"), or a UUID. `whole` is true when the query, stripped of
- * surrounding punctuation, is exactly one such token.
+ * other `letters-digits` ("gpt-5"), or a UUID. Digits of any script count ("note #١٣٠" →
+ * "note-130"). `whole` is true when the query, stripped of surrounding punctuation, is exactly one
+ * such token.
  */
 function findIdTokens(query: string): { ids: string[]; whole: boolean } {
   const prefixes = getRegisteredKnowledgeTypes()
@@ -296,12 +313,14 @@ function findIdTokens(query: string): { ids: string[]; whole: boolean } {
     .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
   const token = new RegExp(
-    `(?<!${WORD_CHAR})(?:(${prefixes.join("|")})${NON_WORD}*(\\d+)|(\\p{L}+-\\d+)|(${uuid}))(?!${WORD_CHAR})`,
+    `(?<!${WORD_CHAR})(?:(${prefixes.join("|")})${NON_WORD}*(\\p{Nd}+)|(\\p{L}+-\\d+)|(${uuid}))(?!${WORD_CHAR})`,
     "giu",
   );
   const matches = [...query.matchAll(token)];
   const ids = matches.map((m) =>
-    (m[1] ? `${m[1]}-${m[2]}` : (m[3] ?? m[4] ?? "")).toLowerCase(),
+    m[1]
+      ? `${m[1].toLowerCase()}-${asciiDigits(m[2] ?? "")}`
+      : (m[3] ?? m[4] ?? "").toLowerCase(),
   );
   const core = query.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
   return { ids, whole: matches.length === 1 && matches[0]?.[0] === core };

@@ -281,7 +281,17 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
         type: "decision",
         content: "Logs are kept for 30 days.",
       });
-      expect([dec1.id, dec2.id, dec3.id]).toEqual(["dec-001", "dec-002", "dec-003"]);
+      const dec4 = await system.memoryStore({
+        title: "Alerting decision",
+        type: "decision",
+        content: "Alerts go to the phone.",
+      });
+      expect([dec1.id, dec2.id, dec3.id, dec4.id]).toEqual([
+        "dec-001",
+        "dec-002",
+        "dec-003",
+        "dec-004",
+      ]);
       const exists = (p: string) => existsSync(join(tempDir, p));
 
       // Uppercase, wrapped in [[…]] with a trailing dot, a non-breaking hyphen (U+2011): dec-001.
@@ -308,6 +318,14 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
       });
       expect(third.forgotten).toEqual([dec3.file_path]);
 
+      // Digits of any script count and are read as ASCII: fullwidth "００４" is dec-004.
+      const fourth = await system.forget({
+        query: "DEC-\uFF10\uFF10\uFF14",
+        scope: "entry",
+        confirm: true,
+      });
+      expect(fourth.forgotten).toEqual([dec4.file_path]);
+
       // Retries and near misses: nothing, although the citing note contains "dec", "001", "002".
       for (const query of [
         "dec-001",
@@ -316,6 +334,7 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
         "dec/002",
         "dec−001",
         "dec#003",
+        "dec #\u0660\u0660\u0664", // Arabic-Indic digits: dec-004 again
         "dec-1",
         "decision-001",
         "decision‑001", // no registered prefix: only the dash folding makes this an id
