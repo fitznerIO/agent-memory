@@ -49,6 +49,8 @@ export interface MemorySearchHit {
   content: string;
   tags?: string[];
   score: number;
+  /** Contains every query word literally; exact matches come first (see MemorySearchOutput). */
+  exactMatch: boolean;
   source: string;
   lastAccessed: string;
   storeSource: StoreSource;

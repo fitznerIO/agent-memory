@@ -516,7 +516,8 @@ export function createMemorySystem(
 
   /**
    * Merge project and global search results.
-   * Project results are preferred at equal scores.
+   * Exact matches first (see searchHybrid), then by score; project results are preferred at
+   * equal scores.
    */
   function mergeSearchResults(
     projectResults: SearchResult[],
@@ -541,8 +542,14 @@ export function createMemorySystem(
       }
     }
 
-    // Sort by score descending (project wins ties due to stable sort + appearing first)
-    deduped.sort((a, b) => b.score - a.score);
+    // Exact matches first, then score descending (project wins ties due to stable sort +
+    // appearing first). By score alone, a global entry without the word would slip back in
+    // front of a project entry that has it — each store normalises its own scores.
+    deduped.sort(
+      (a, b) =>
+        Number(b.exactMatch === true) - Number(a.exactMatch === true) ||
+        b.score - a.score,
+    );
     return deduped.slice(0, limit);
   }
 
@@ -671,6 +678,7 @@ export function createMemorySystem(
             content: r.memory.content,
             source: r.memory.filePath,
             score: r.score,
+            exactMatch: r.exactMatch === true,
             type: r.memory.metadata.type,
             lastAccessed: new Date(
               r.memory.metadata.lastAccessedAt,

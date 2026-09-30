@@ -125,10 +125,45 @@ function collectStems(word: string): string[] {
 }
 
 /**
+ * Fold text for comparisons that should not care how a German word was typed: lower case, umlauts
+ * and ß spelled out (ä → ae, ö → oe, ü → ue, ß → ss), every other diacritic dropped (é → e).
+ * "Grün" and "Gruen" both become "gruen". NFC first, so a decomposed "u + ◌̈" is an umlaut too
+ * and not a "u" whose mark the last step strips.
+ */
+function foldSpelling(text: string): string {
+  return text
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/ä/g, "ae")
+    .replace(/ö/g, "oe")
+    .replace(/ü/g, "ue")
+    .replace(/ß/g, "ss")
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "");
+}
+
+const HAS_UMLAUT = /[äöüß]/i;
+
+/**
+ * The spelled-out form of a word with an umlaut or ß ("Rückmeldung" → "rueckmeldung"), or null.
+ *
+ * FTS5's unicode61 tokenizer already folds most diacritics (é matches e, ü matches u), but it
+ * cannot know that "ü" is also written "ue" — so without this, "Grün" never finds "Gruen" and the
+ * other way round. Both sides map to the spelled-out form: the index adds it next to the word
+ * (preprocessForFts), the query adds it as one more alternative (sanitizeFtsQuery).
+ */
+function spelledOutVariant(word: string): string | null {
+  const nfc = word.normalize("NFC");
+  return HAS_UMLAUT.test(nfc) ? foldSpelling(nfc) : null;
+}
+
+/**
  * Preprocess text for FTS5 indexing:
  * 1. Optionally prepend the document title for title-match boosting
  * 2. Expand hyphenated terms: "KI-Services" → "KI-Services KI Services"
- * 3. Append unique stems (primary + prefix-stripped + fuzzy) so that
+ * 3. Append the spelled-out form of words with umlauts ("Grün" → "gruen"),
+ *    so a query typed without umlauts finds them
+ * 4. Append unique stems (primary + prefix-stripped + fuzzy) so that
  *    morphological variants match in the FTS index.
  */
 function preprocessForFts(text: string, title?: string): string {
@@ -139,6 +174,17 @@ function preprocessForFts(text: string, title?: string): string {
   result = result.replace(/\b(\w+)-(\w+)\b/g, (match, a, b) => {
     return `${match} ${a} ${b}`;
   });
+
+  // Spelled-out umlauts. Appended before the stem step, which only sees ASCII words (\w without
+  // the u flag) — so the spelled-out form also gets the stems the umlaut word never got.
+  const spelledOut = new Set<string>();
+  for (const w of result.normalize("NFC").match(/[\p{L}\p{N}]+/gu) ?? []) {
+    const variant = spelledOutVariant(w);
+    if (variant) spelledOut.add(variant);
+  }
+  if (spelledOut.size > 0) {
+    result += ` ${[...spelledOut].join(" ")}`;
+  }
 
   // Collect all stems (primary + prefix-stripped + fuzzy) for words ≥ 3 chars
   const words = result.match(/\b\w{3,}\b/g);
@@ -193,12 +239,13 @@ function isFtsQueryError(error: unknown): boolean {
 }
 
 /**
- * Sanitize a query string for FTS5 MATCH syntax.
- * Removes characters that would cause FTS5 parse errors (/, ., -, etc.) and appends stems
- * so that morphological variants match indexed stems.
+ * A query in NFC with everything but letters, digits, underscores and single spaces removed.
  */
-function sanitizeFtsQuery(query: string): string {
-  let sanitized = query;
+function sanitizeQueryText(query: string): string {
+  // NFC first: a decomposed "ü" is "u" plus a combining mark, and the whitelist below turns
+  // that mark into a space — "Rückmeldung" typed on a system that sends NFD searched for "Ru"
+  // and "ckmeldung".
+  let sanitized = query.normalize("NFC");
 
   // Keep letters, digits, underscore and whitespace — drop everything else.
   //
@@ -214,7 +261,27 @@ function sanitizeFtsQuery(query: string): string {
   sanitized = sanitized.replace(/[^\p{L}\p{N}_\s]/gu, " ");
 
   // Collapse multiple spaces
-  sanitized = sanitized.replace(/\s+/g, " ").trim();
+  return sanitized.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The words full-text search looks for: the sanitized query split at spaces, without words
+ * shorter than two characters. The exact-match check in searchHybrid uses the same words, so
+ * "contains the query" always means the words that were actually searched.
+ */
+function queryWords(query: string): string[] {
+  return sanitizeQueryText(query)
+    .split(" ")
+    .filter((w) => w.length >= 2);
+}
+
+/**
+ * Sanitize a query string for FTS5 MATCH syntax.
+ * Removes characters that would cause FTS5 parse errors (/, ., -, etc.) and appends stems
+ * so that morphological variants match indexed stems.
+ */
+function sanitizeFtsQuery(query: string): string {
+  const sanitized = sanitizeQueryText(query);
 
   // Reject empty or too-short queries
   if (sanitized.length < 2) return "";
@@ -222,12 +289,19 @@ function sanitizeFtsQuery(query: string): string {
   // Expand each word with all stems (primary + prefix-stripped + fuzzy) using OR groups:
   // "Stundensätze regulatorisch" → "(Stundensätze OR stundensatz) AND (regulatorisch OR regulator)"
   // FTS5 requires explicit AND when mixing OR groups (implicit AND + OR crashes).
-  const words = sanitized.split(/\s+/).filter((w) => w.length >= 2);
+  // A word with an umlaut also gets its spelled-out form and that form's stems ("Grün" → gruen).
+  const words = queryWords(query);
   if (words.length > 0) {
     const groups: string[] = [];
     let hasOrGroup = false;
     for (const w of words) {
-      const stems = collectStems(w);
+      const variant = spelledOutVariant(w);
+      const stems = [
+        ...new Set([
+          ...collectStems(w),
+          ...(variant ? [variant, ...collectStems(variant)] : []),
+        ]),
+      ];
       if (stems.length > 0) {
         groups.push(`(${w} OR ${stems.join(" OR ")})`);
         hasOrGroup = true;
@@ -240,6 +314,43 @@ function sanitizeFtsQuery(query: string): string {
   }
 
   return sanitized;
+}
+
+/**
+ * Query words up to this many characters (after foldSpelling) only count as an exact match when
+ * they stand alone as a word. Longer ones count anywhere, also inside a compound.
+ *
+ * German builds compounds, so "Kontingent" should find "Wochenkontingent" and "Backup" should find
+ * "Backups" — a word-boundary rule would miss both, and the plural and genitive of every name.
+ * For short words a substring is mostly noise: "KI" is in "Kinder", "Ada" in "Adapter", "App" in
+ * "Apple". Three is where that noise stops being the rule; a four-letter word can still hit a
+ * longer one ("Test" in "latest"), which then only moves up among the entries that contain it.
+ */
+const WHOLE_WORD_MAX_LENGTH = 3;
+
+/**
+ * One test per distinct query word for the exact-match check in searchHybrid. Each takes text
+ * already passed through foldSpelling. Empty when the query has no word full-text search would
+ * look for — then nothing is an exact match and the ranking is the plain hybrid one.
+ */
+function exactWordTests(query: string): Array<(folded: string) => boolean> {
+  // An empty word would be "contained" in everything — never let one through.
+  const words = [
+    ...new Set(
+      queryWords(query)
+        .map(foldSpelling)
+        .filter((w) => w.length > 0),
+    ),
+  ];
+  return words.map((w) => {
+    if (w.length > WHOLE_WORD_MAX_LENGTH) return (text) => text.includes(w);
+    const escaped = w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const whole = new RegExp(
+      `(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`,
+      "u",
+    );
+    return (text) => whole.test(text);
+  });
 }
 
 function rowToMemory(row: MemoryRow): Memory {
@@ -713,7 +824,21 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
         t.toLowerCase().replace(/\/+$/, ""),
       );
 
-      const scored: Array<{ id: string; score: number; memory: Memory }> = [];
+      const exactTests = exactWordTests(query);
+      const containsQuery = (memory: Memory): boolean => {
+        if (exactTests.length === 0) return false;
+        const text = foldSpelling(
+          `${memory.metadata.title}\n${memory.content}`,
+        );
+        return exactTests.every((test) => test(text));
+      };
+
+      const scored: Array<{
+        id: string;
+        score: number;
+        memory: Memory;
+        exact: boolean;
+      }> = [];
 
       for (const id of allIds) {
         const ftsEntry = ftsRanks.get(id);
@@ -763,7 +888,7 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
           score *= 1.15;
         }
 
-        scored.push({ id, score, memory });
+        scored.push({ id, score, memory, exact: containsQuery(memory) });
       }
 
       // Sort by score descending
@@ -790,9 +915,28 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
         scored[0].score = 1.0;
       }
 
-      // Filter by minScore and limit
+      // Exact matches first. An entry whose title or text contains every query word literally
+      // (foldSpelling on both sides, so case and ä/ae do not matter; see WHOLE_WORD_MAX_LENGTH for
+      // short words) comes before every entry that does not, whatever the scores say.
+      //
+      // The scores alone cannot do this. The vector search has no notion of "contains the word",
+      // and with weightVector above weightFts a close neighbour without the word regularly beat
+      // the entries that had it: a proper name came back on position 3, 5 and 8 behind an entry
+      // that never mentions it — scored 1.0.
+      //
+      // - Within each group the order stays the hybrid one: the sort is stable and runs on the
+      //   list already sorted by score.
+      // - An exact match is kept even below minScore; the normalised score says nothing about
+      //   whether the word is there, and a literal hit filtered out as "irrelevant" is the bug.
+      //   For every other entry minScore works as before, on the same normalised score.
+      // - The score is left as it was, so it no longer falls strictly down the list: an exact
+      //   match can score lower than a non-exact one below it. `exactMatch` says which group an
+      //   entry is in, and callers that merge lists sort by it first (mergeSearchResults).
+      // - Only candidates are ranked: the full-text and vector pools of `poolSize` each. An entry
+      //   that contains the word but is in neither pool is not found, as before.
       return scored
-        .filter((s) => s.score >= opts.minScore)
+        .filter((s) => s.exact || s.score >= opts.minScore)
+        .sort((a, b) => Number(b.exact) - Number(a.exact))
         .slice(0, opts.limit)
         .map((s) => ({
           memory: s.memory,
@@ -800,6 +944,7 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
           matchType: "hybrid" as const,
           source: "hybrid-rrf",
           storeSource: "project" as const,
+          exactMatch: s.exact,
         }));
     },
 

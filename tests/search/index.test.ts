@@ -428,8 +428,9 @@ describe("SearchIndex", () => {
         makeMemory("mem-1", "Hello world", { embedding: vec }),
       );
 
-      // Use a very high minScore that no result can meet
-      const results = await idx.searchHybrid("Hello", vec, {
+      // Use a very high minScore that no result can meet. The query must not be
+      // in the text: an entry that contains every query word is never filtered.
+      const results = await idx.searchHybrid("Greetings", vec, {
         limit: 5,
         minScore: 999,
       });

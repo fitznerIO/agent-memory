@@ -16,6 +16,12 @@
  * weightFts, weightVector and the fallback, so testing other weights would test
  * a different system. The one exception is the symmetry test, which uses equal
  * weights on purpose (its comment says why).
+ *
+ * Since exact matches come first (exact-match-first.test.ts), the returned order
+ * no longer shows the fallback for an entry that contains the query word: it is
+ * first either way. The scores still do -- the exact-match tier does not touch
+ * them -- so the positions below are positions by score (`byScore`), which is the
+ * returned order of the code these tests were written for.
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -25,9 +31,16 @@ import { createSearchIndex } from "../../src/search/index.ts";
 import { createDefaultConfig } from "../../src/shared/config.ts";
 import type { SearchIndex } from "../../src/search/types.ts";
 import type { MemoryConfig } from "../../src/shared/config.ts";
-import type { Memory } from "../../src/shared/types.ts";
+import type { Memory, SearchResult } from "../../src/shared/types.ts";
 
 const DIMS = 384;
+
+/** Result ids in score order: the hybrid order without the exact-match tier. */
+function byScore(results: SearchResult[]): string[] {
+  return [...results]
+    .sort((a, b) => b.score - a.score)
+    .map((r) => r.memory.metadata.id);
+}
 
 /**
  * The real production hybrid weights, read from `createDefaultConfig()` rather
@@ -202,7 +215,7 @@ describe("searchHybrid: RRF fallback rank", () => {
     const results = await idx.searchHybrid("netcup", QUERY_VEC, { limit: 5 });
 
     expect(results.length).toBeGreaterThan(0);
-    expect(results[0]!.memory.metadata.id).toBe("target");
+    expect(byScore(results)[0]).toBe("target");
   });
 
   test("a word occurring in two entries puts both in the top 2", async () => {
@@ -229,10 +242,7 @@ describe("searchHybrid: RRF fallback rank", () => {
       limit: 5,
     });
 
-    const topTwo = results
-      .slice(0, 2)
-      .map((r) => r.memory.metadata.id)
-      .sort();
+    const topTwo = byScore(results).slice(0, 2).sort();
     expect(topTwo).toEqual(["target-a", "target-b"]);
   });
 
@@ -316,14 +326,12 @@ describe("searchHybrid: RRF fallback rank", () => {
 
     // Same corpus at the production weights: the fallback's size shows.
     const prod = await idx.searchHybrid("netcup", QUERY_VEC, { limit: 5 });
-    expect(prod.findIndex((r) => r.memory.metadata.id === "fts-only")).toBe(2);
+    expect(byScore(prod).indexOf("fts-only")).toBe(2);
   });
 
   /**
-   * SILENT FAILURE, pinned deliberately.
-   *
    * The fix makes the fallback symmetric. It does NOT make an exact lexical
-   * match win outright, because weightVector (0.55) > weightFts (0.4):
+   * match win on score, because weightVector (0.55) > weightFts (0.4):
    *
    *   V(rank 1) - F  =  (wV - wF) * (1/(k+1) - 1/(k+M))  >  0
    *
@@ -336,10 +344,13 @@ describe("searchHybrid: RRF fallback rank", () => {
    * 0.08 + 0.55/(3+r), which put eight of them ahead: position 9, outside a
    * limit of 5. The entry was simply gone.
    *
-   * If this test ever reports position 1, someone changed the weights and this
-   * comment is stale -- that would be an improvement, not a regression.
+   * This used to be a silent failure: the entry with the word came back third.
+   * Exact matches first now puts it on position 1 in the result list, but its
+   * score still ranks it third -- which is what pins the fallback here. If the
+   * score position ever reads 1, someone changed the weights and this comment is
+   * stale.
    */
-  test("an exact hit outside the vector pool reaches position 3, not position 1", async () => {
+  test("an exact hit outside the vector pool is returned first, but scores third", async () => {
     await indexFillers(23, []);
     await idx.index(
       makeMemory(
@@ -351,10 +362,9 @@ describe("searchHybrid: RRF fallback rank", () => {
 
     const results = await idx.searchHybrid("netcup", QUERY_VEC, { limit: 5 });
 
-    const position = results.findIndex(
-      (r) => r.memory.metadata.id === "target",
-    );
-    expect(position).toBe(2); // 0-indexed -> position 3
+    expect(results[0]!.memory.metadata.id).toBe("target");
+    expect(results[0]!.exactMatch).toBe(true);
+    expect(byScore(results).indexOf("target")).toBe(2); // 0-indexed -> position 3
   });
 
   /**
@@ -366,14 +376,15 @@ describe("searchHybrid: RRF fallback rank", () => {
    *   target (FTS rank 1, outside a 3-deep pool) = 0.4/2 + 0.55/5  = 0.31000
    *   filler at vector rank 1, no word match     = 0.4/5 + 0.55/2  = 0.35500
    *
-   * so it is not returned. That is not a general "limit 1 does not help": an
+   * so by score it is not the top result, and before exact matches came first it
+   * was not returned at all. That is not a general "limit 1 does not help": an
    * entry at vector rank 2 is not returned by the old code at limit 1 and comes
    * first with the fix. (`forget --scope entry` used to search at limit 1, which
    * is one reason it could delete the wrong entry -- #8.)
    *
    * A second thing this pins: every other test in this file runs at limit 5, so a
    * fallback accidentally hard-coded to a constant would pass them all. Here the
-   * expected positions differ per limit, which rules out most constants -- 16, the
+   * expected score leads differ per limit, which rules out most constants -- 16, the
    * value that is correct at limit 5, fails here. It does not rule out every
    * constant on its own (9 also satisfies these positions); the position-3 test
    * above catches that one. The two together close the gap.
@@ -388,29 +399,34 @@ describe("searchHybrid: RRF fallback rank", () => {
       ),
     );
 
-    const positionAt = async (limit: number) => {
+    // The target contains the word, so it is always returned first now. Whether it
+    // also leads on score is what the fallback decides: a normalised score of 1.
+    const leadsAt = async (limit: number) => {
       const res = await idx.searchHybrid("netcup", QUERY_VEC, { limit });
-      return res.findIndex((r) => r.memory.metadata.id === "target");
+      expect(res[0]!.memory.metadata.id).toBe("target");
+      return res[0]!.score === 1;
     };
 
     // limit 1 -> poolSize 3, k 1, fallback 4. Target is outside a 3-deep pool
-    // and loses to the nearest vector neighbour: not returned at all.
-    expect(await positionAt(1)).toBe(-1);
+    // and loses to the nearest vector neighbour (by score it would not be the
+    // one result returned).
+    expect(await leadsAt(1)).toBe(false);
 
     // limit 2 -> poolSize 6, k 1, fallback 7. Target is inside the pool now but
     // still behind the nearest neighbour.
-    expect(await positionAt(2)).toBe(1);
+    expect(await leadsAt(2)).toBe(false);
 
-    // limit 3 -> poolSize 9, k 2, fallback 10. From here the exact hit wins.
-    expect(await positionAt(3)).toBe(0);
-    expect(await positionAt(5)).toBe(0);
-    expect(await positionAt(10)).toBe(0);
+    // limit 3 -> poolSize 9, k 2, fallback 10. From here the exact hit wins on score too.
+    expect(await leadsAt(3)).toBe(true);
+    expect(await leadsAt(5)).toBe(true);
+    expect(await leadsAt(10)).toBe(true);
   });
 
   /**
-   * SILENT FAILURE, pinned deliberately (#9, item 2): minScore drops real
-   * matches after min-max normalisation. If this is fixed, this test SHOULD go
-   * red -- flip the expectations, do not delete the test.
+   * Was a SILENT FAILURE, pinned deliberately (#9, item 2): minScore dropped real
+   * matches after min-max normalisation. Exact matches are now exempt from
+   * minScore, so the expectations are flipped: all six come back. The mechanism
+   * below is unchanged and still applies to entries that do NOT contain the word.
    *
    * searchHybrid normalises scores min-max across the whole candidate pool. Once
    * there are at least two candidates with different scores, the worst one ends
@@ -455,16 +471,16 @@ describe("searchHybrid: RRF fallback rank", () => {
       limit: 10,
       minScore: 0.1,
     });
-    expect(atPointOne.length).toBe(5); // one real match silently gone
+    expect(atPointOne.length).toBe(6); // used to be 5: one real match gone
 
-    const lost = unfiltered[5]!.memory.metadata.id;
-    expect(atPointOne.map((r) => r.memory.metadata.id)).not.toContain(lost);
+    const zeroScored = unfiltered[5]!.memory.metadata.id;
+    expect(atPointOne.map((r) => r.memory.metadata.id)).toContain(zeroScored);
 
-    // At the value the CLI actually passes, two of the six are gone.
+    // At the value the CLI actually passes: used to be 4 of the six.
     const atProductionDefault = await idx.searchHybrid("alpha", QUERY_VEC, {
       limit: 10,
       minScore: 0.3,
     });
-    expect(atProductionDefault.length).toBe(4);
+    expect(atProductionDefault.length).toBe(6);
   });
 });

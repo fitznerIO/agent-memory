@@ -61,6 +61,11 @@ export interface SearchResult {
   matchType: "fts" | "vector" | "hybrid";
   source: string;
   storeSource: StoreSource;
+  /**
+   * Hybrid search only: the title or text contains every query word literally. Exact matches
+   * are ranked before all other results, so sort by this first and by `score` second.
+   */
+  exactMatch?: boolean;
 }
 
 export interface HybridSearchOptions {
@@ -112,10 +117,17 @@ export interface MemorySearchOutput {
     source: string;
     /**
      * Min-max normalised over its store's candidate pool, before minScore, limit and filters: the
-     * best candidate gets 1.0 even when nothing matches well. Orders the results of one search;
-     * not a relevance measure, not comparable across searches.
+     * best candidate gets 1.0 even when nothing matches well. Orders the results of one search
+     * within the exact matches and within the rest; not a relevance measure, not comparable
+     * across searches.
      */
     score: number;
+    /**
+     * The title or text contains every query word literally (case and ä/ae spelling ignored;
+     * words of up to three letters only as a whole word). Exact matches come first, whatever
+     * their score, and are never dropped by minScore.
+     */
+    exactMatch: boolean;
     type: string;
     lastAccessed: string;
     storeSource: StoreSource;
