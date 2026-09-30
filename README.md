@@ -279,7 +279,8 @@ full-text query finds for the check: every spelling of each word (`Rückmeldung`
 `Rueckmeldung`, `Fußgaenger` and `Fussgänger`, also inside `KI-Übersicht`), words of
 four or more letters also at the start of a longer word (`Backups`,
 `Kontingentgrenze`), a date or id as one phrase. Only entries that pass the check are
-added — rows that fail it, like the `Grund…` that `grün` also matches, are skipped —
+added — rows that fail it, like the `Grund…` that `grün` also matches, are skipped
+(it reads up to 1000 rows) —
 and they do not change the other entries' scores: a search without an exact match
 ranks exactly as before. The index is unchanged. An entry that has the word only at the end of a longer word
 (`Wochenkontingent`) is a candidate only if the vector search brings it in. Tag and

@@ -327,13 +327,19 @@ const NOT_ALNUM = "[^\\p{L}\\p{M}\\p{N}]";
  * digits add up to one character is dropped.
  */
 function exactQueryWords(query: string): string[][] {
-  return query
-    .normalize("NFC")
-    .split(/\s+/)
-    .map((word) =>
-      word.split(/[^\p{L}\p{M}\p{N}]+/u).filter((p) => p.length > 0),
-    )
-    .filter((parts) => parts.join("").length >= 2);
+  return (
+    query
+      .normalize("NFC")
+      .split(/\s+/)
+      .map((word) =>
+        word.split(/[^\p{L}\p{M}\p{N}]+/u).filter((p) => p.length > 0),
+      )
+      // Letters and digits only: marks alone fold to nothing in Latin text, and an empty
+      // pattern is "contained" in every entry.
+      .filter(
+        (parts) => (parts.join("").match(/[\p{L}\p{N}]/gu)?.length ?? 0) >= 2,
+      )
+  );
 }
 
 /**
@@ -878,27 +884,29 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       // Entries that contain the query but are in neither pool — the regular full-text query
       // does not match every spelling, word ending or date (see exactCandidateQuery). Only
       // confirmed exact matches are added, so a search without one ranks exactly as before.
-      // Rows that fail the check are skipped, not counted: the query reads up to
-      // MAX_CANDIDATE_ROWS rows until it has kept `poolSize` — with only `poolSize` rows, 40
-      // entries with "Grund" crowded out the one with "grün".
+      // Rows that fail the check, and rows a filter (allowIds) would drop, are skipped, not
+      // counted: up to MAX_CANDIDATE_ROWS rows are read until `poolSize` are kept — with only
+      // `poolSize` rows, 40 entries with "Grund" crowded out the one with "grün". `.all()`, not
+      // `.iterate()` with a break: an unfinished statement keeps its read open and locks the
+      // tables for rebuild and for writers in other processes.
       const extra = new Map<string, Memory>();
       const candidateQuery = exactCandidateQuery(query);
       if (candidateQuery) {
+        let rows: FtsResultRow[] = [];
         try {
-          for (const row of searchFts.iterate(
-            candidateQuery,
-            MAX_CANDIDATE_ROWS,
-          )) {
-            if (extra.size >= poolSize) break;
-            if (allIds.has(row.id)) continue;
-            const memory = rowToMemory(row);
-            if (containsQuery(memory)) {
-              extra.set(row.id, memory);
-              allIds.add(row.id);
-            }
-          }
+          rows = searchFts.all(candidateQuery, MAX_CANDIDATE_ROWS);
         } catch (error) {
           if (!isFtsQueryError(error)) throw error;
+        }
+        for (const row of rows) {
+          if (extra.size >= poolSize) break;
+          if (allIds.has(row.id)) continue;
+          if (opts.allowIds && !opts.allowIds.has(row.id)) continue;
+          const memory = rowToMemory(row);
+          if (containsQuery(memory)) {
+            extra.set(row.id, memory);
+            allIds.add(row.id);
+          }
         }
       }
 

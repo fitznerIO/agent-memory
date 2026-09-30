@@ -451,12 +451,49 @@ describe("searchHybrid: exact matches first", () => {
 
   test("marks inside words of other scripts are kept", async () => {
     await indexFillers(35);
-    // काम (work) and कम (less) differ only by a vowel sign. Both are near vector neighbours.
+    // काम (work) and कम (less) differ only by a vowel sign; in कमाई (earnings) कम is followed by
+    // one. All near vector neighbours.
     await idx.index(makeMemory("work", "काम पूरा हुआ", 0.5));
     await idx.index(makeMemory("less", "कम समय बचा", 1.5));
+    await idx.index(makeMemory("earnings", "कमाई अच्छी है", 2.5));
+    // Hangul decomposes under NFD; the candidate query must search it composed. No vector.
+    await idx.index(makeMemory("korea", "대한민국의 수도는 서울", null));
 
     expect(exactIds(await search("काम"))).toEqual(["work"]);
     expect(exactIds(await search("कम"))).toEqual(["less"]);
+    expect(exactIds(await search("대한민국"))).toEqual(["korea"]);
+  });
+
+  test("a filter does not let entries outside it crowd out the exact match", async () => {
+    // 200 short entries with the word outside the filter rank first for both full-text queries;
+    // the one inside it is long and has no vector. limit 25 is what search() passes for
+    // --limit 5 with a filter.
+    for (let i = 0; i < 200; i++) {
+      await idx.index(makeMemory(`other-${i}`, `Quillfeather ${i}`, null));
+    }
+    const long = FILLER.slice(0, 8).join(". ");
+    await idx.index(makeMemory("inside", `${long}. Quillfeather.`, null));
+
+    const results = await search("Quillfeather", {
+      limit: 25,
+      allowIds: new Set(["inside"]),
+    });
+
+    expect(ids(results)).toEqual(["inside"]);
+    expect(results[0]!.exactMatch).toBe(true);
+  });
+
+  test("a search that stops reading candidates early leaves no lock behind", async () => {
+    // More candidate rows than it keeps: the search stops reading them. An unfinished statement
+    // kept a read open, and rebuild then failed with "database table is locked".
+    for (let i = 0; i < 60; i++) {
+      await idx.index(
+        makeMemory(`green-${i}`, `die Wiese ist grün ${i}`, null),
+      );
+    }
+    await search("Gruen", { limit: 5 });
+
+    await expect(idx.rebuild()).resolves.toBeDefined();
   });
 
   test("minScore never drops an exact match, and still filters the rest", async () => {
@@ -480,11 +517,23 @@ describe("searchHybrid: exact matches first", () => {
   // small, so a decoy that slipped in would show up in the list.
   test("without an exact match the candidates and their order are the plain hybrid ones", async () => {
     await indexFillers(5);
+    const marksOnly = String.fromCharCode(0x301, 0x301); // two combining accents, no letter
+    const queries = ["Buerger", "due", "Zeppelinhangar", "a", "–", marksOnly];
+    const before = new Map<string, SearchResult[]>();
+    for (const query of queries) before.set(query, await search(query));
+
     await idx.index(makeMemory("burger", "Der Burger war kalt", null));
     await idx.index(makeMemory("du", "du bist dran", null));
 
-    for (const query of ["Buerger", "due", "Zeppelinhangar", "a", "–"]) {
+    for (const query of queries) {
       const results = await search(query);
+      // The decoys change nothing: same entries, same order, same scores.
+      const was = before.get(query)!;
+      expect(ids(results)).toEqual(ids(was));
+      results.forEach((r, i) =>
+        // Not toBe: recency is computed from Date.now(), which moves between the searches.
+        expect(r.score).toBeCloseTo(was[i]!.score, 10),
+      );
       const pools = new Set([
         ...ids(await idx.searchText(query, 30)),
         ...ids(await idx.searchVector(QUERY_VEC, 30)),
