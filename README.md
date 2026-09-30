@@ -260,21 +260,31 @@ on their own: the vector search has no notion of "contains the word", and with t
 vector weight above the full-text weight a close neighbour without the word often
 outscored the entries that had it. What counts as "contains":
 
-- **Every word**, in any order and any distance apart — the same words full-text
-  search looks for (words of one letter are ignored, as there).
+- **Every word**, in any order and any distance apart. A word is what the query
+  separates by spaces; one with punctuation inside — a date like `2026-09-15`, an id
+  like `dec-012`, `KI-Agent` — counts only with its parts in that order and nothing but
+  spaces or punctuation between them. One-letter words are ignored.
 - **Case and umlaut spelling do not matter.** `Grün`, `grün` and `Gruen` are the same
   word, so are `Größe` and `Groesse`; other accents are dropped (`é` = `e`).
-- **Words of up to three letters only as a whole word** (`KI` is not in `Kinder`).
-  Longer words also count inside a compound: `Kontingent` is in `Wochenkontingent`,
-  `Backup` in `Backups`.
+- **Words of up to three letters only as a whole word** (`KI` is not in `Kinder`,
+  `Tür` not in `Türkei` — letters as typed). Longer words also count inside a
+  compound: `Kontingent` is in `Wochenkontingent`, `Backup` in `Backups`.
 - **Title and text only**, not tags. A title hit does not rank above a text hit.
 
 Only candidates are ranked — the full-text and vector pools. Full-text search matches
 whole words and their stems, so an entry that has the word only inside a compound
-is a candidate only if the vector search brings it in. Words with umlauts are also
-indexed and searched in their spelled-out form, so `Rückmeldung` finds entries that
-write `Rueckmeldung` and the other way round; entries indexed before this change
-need `agent-memory rebuild-index` for the second direction.
+is a candidate only if the vector search brings it in. Full-text search also looks
+for the other spelling of each word — `Rückmeldung` also for `rueckmeldung`, `Gruen`
+also for `grün` — so entries in either spelling are candidates; the index itself is
+unchanged. A date or id competes with every entry that has the same numbers: when
+many do, some entries with the exact date do not make it into the pool. Tag and
+connection filters (`--tags`, `--connected-to`) apply before exact matches move up
+and the list is cut, so exact matches outside the filter cannot take its places.
+
+`exactMatch` is looser than what `forget` deletes: `forget` needs the query as a
+phrase — whole words, in order — and does not treat `ä` and `ae` as the same. An
+entry with `exactMatch: true` is not necessarily one `forget` with the same query
+would remove; forget by id when in doubt.
 
 **What the score means.** Scores are min-max normalised over each store's candidate
 pool, before `minScore`, `limit` and tag or connection filters: the best candidate
