@@ -848,6 +848,38 @@ describe("forget(): deletes only entries that contain the query (#8)", () => {
 
   // If a delete fails half-way, forget stops and the answer lists exactly what is already gone.
   test(
+    "an umlaut query works in either Unicode form and deletes only its own spelling",
+    async () => {
+      // The query sanitiser used to turn the combining mark of a decomposed "ü" into a space, so
+      // "Rückmeldung" sent as NFD searched for "Ru" and "ckmeldung" and forget found nothing.
+      // Full-text search now also looks for the spelled-out "rueckmeldung" — forget still deletes
+      // only the entry that contains the query as written.
+      await system.note({
+        content: "Die Rückmeldung zum Angebot kam per Post",
+        type: "semantic",
+        importance: "low",
+      });
+      await system.note({
+        content: "Die Rueckmeldung zum Angebot kam per Mail",
+        type: "semantic",
+        importance: "low",
+      });
+
+      const result = await system.forget({
+        query: "Rückmeldung".normalize("NFD"),
+        scope: "topic",
+        confirm: true,
+      });
+
+      expect(result.forgotten).toHaveLength(1);
+      const left = entryContents(tempDir);
+      expect(left.some((c) => c.includes("kam per Post"))).toBe(false);
+      expect(left.some((c) => c.includes("kam per Mail"))).toBe(true);
+    },
+    TEST_TIMEOUT,
+  );
+
+  test(
     "when a delete fails, forget stops and says which files are already gone",
     async () => {
       await system.note({

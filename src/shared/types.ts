@@ -79,6 +79,12 @@ export interface HybridSearchOptions {
   boostTags?: string[];
   /** Entry ID the user is currently looking at — connected entries get a boost */
   contextEntryId?: string;
+  /**
+   * Only these entry ids may be returned (tag or connection filters). Applied after scoring and
+   * minScore, before exact matches are moved first and `limit` cuts the list — filtering after
+   * the cut let exact matches outside the filter take every slot.
+   */
+  allowIds?: ReadonlySet<string>;
 }
 
 export interface SessionState {
@@ -124,8 +130,9 @@ export interface MemorySearchOutput {
     score: number;
     /**
      * The title or text contains every query word literally (case and ä/ae spelling ignored;
-     * words of up to three letters only as a whole word). Exact matches come first, whatever
-     * their score, and are never dropped by minScore.
+     * words of up to three letters only as a whole word; a date or id like "dec-012" only with
+     * its parts in order). Exact matches come first, whatever their score, and are never dropped
+     * by minScore. Looser than forget's phrase rule.
      */
     exactMatch: boolean;
     type: string;

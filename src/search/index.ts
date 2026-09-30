@@ -142,28 +142,64 @@ function foldSpelling(text: string): string {
     .replace(/\p{M}/gu, "");
 }
 
-const HAS_UMLAUT = /[äöüß]/i;
+const HAS_UMLAUT = /[äöüß]/u;
+const SPELLED_OUT_PAIR = /ae|oe|ue|ss/g;
+const UMLAUT_OF: Record<string, string> = {
+  ae: "ä",
+  oe: "ö",
+  ue: "ü",
+  ss: "ß",
+};
+
+/** Words with more of these pairs get combinations of the first three only (seven variants). */
+const MAX_SPELLING_PAIRS = 3;
 
 /**
- * The spelled-out form of a word with an umlaut or ß ("Rückmeldung" → "rueckmeldung"), or null.
+ * The other spellings of a query word, for full-text search: its umlauts and ß spelled out
+ * ("Grün" → "gruen", with that form's stems — see sanitizeFtsQuery), and its ae/oe/ue/ss written
+ * as umlauts, in every combination ("gruen" → "grün", "Groesse" → "grösse", "groeße", "größe").
  *
  * FTS5's unicode61 tokenizer already folds most diacritics (é matches e, ü matches u), but it
- * cannot know that "ü" is also written "ue" — so without this, "Grün" never finds "Gruen" and the
- * other way round. Both sides map to the spelled-out form: the index adds it next to the word
- * (preprocessForFts), the query adds it as one more alternative (sanitizeFtsQuery).
+ * cannot know that "ü" is also written "ue" — without this, "Grün" never finds "Gruen" and the
+ * other way round. Every combination, because one word can mix both ("Steuerbuero" is
+ * "Steuerbüro": only its second "ue" is an umlaut). Most combinations are no word at all
+ * ("neue" → "neü") and simply match nothing.
+ *
+ * Query side only, on purpose. Adding the spelled-out forms to the index would give every entry
+ * with an umlaut extra tokens, and the changed document lengths would reorder full-text results
+ * of every query after a rebuild — including queries that have nothing to do with umlauts.
  */
-function spelledOutVariant(word: string): string | null {
-  const nfc = word.normalize("NFC");
-  return HAS_UMLAUT.test(nfc) ? foldSpelling(nfc) : null;
+function spellingVariants(word: string): {
+  spelledOut: string | null;
+  withUmlauts: string[];
+} {
+  const lower = word.normalize("NFC").toLowerCase();
+  const pairs = [...lower.matchAll(SPELLED_OUT_PAIR)].slice(
+    0,
+    MAX_SPELLING_PAIRS,
+  );
+  const withUmlauts: string[] = [];
+  for (let mask = 1; mask < 1 << pairs.length; mask++) {
+    let variant = "";
+    let pos = 0;
+    pairs.forEach((pair, i) => {
+      if (!(mask & (1 << i))) return;
+      variant += lower.slice(pos, pair.index) + UMLAUT_OF[pair[0]];
+      pos = (pair.index ?? 0) + 2;
+    });
+    withUmlauts.push(variant + lower.slice(pos));
+  }
+  return {
+    spelledOut: HAS_UMLAUT.test(lower) ? foldSpelling(lower) : null,
+    withUmlauts,
+  };
 }
 
 /**
  * Preprocess text for FTS5 indexing:
  * 1. Optionally prepend the document title for title-match boosting
  * 2. Expand hyphenated terms: "KI-Services" → "KI-Services KI Services"
- * 3. Append the spelled-out form of words with umlauts ("Grün" → "gruen"),
- *    so a query typed without umlauts finds them
- * 4. Append unique stems (primary + prefix-stripped + fuzzy) so that
+ * 3. Append unique stems (primary + prefix-stripped + fuzzy) so that
  *    morphological variants match in the FTS index.
  */
 function preprocessForFts(text: string, title?: string): string {
@@ -174,17 +210,6 @@ function preprocessForFts(text: string, title?: string): string {
   result = result.replace(/\b(\w+)-(\w+)\b/g, (match, a, b) => {
     return `${match} ${a} ${b}`;
   });
-
-  // Spelled-out umlauts. Appended before the stem step, which only sees ASCII words (\w without
-  // the u flag) — so the spelled-out form also gets the stems the umlaut word never got.
-  const spelledOut = new Set<string>();
-  for (const w of result.normalize("NFC").match(/[\p{L}\p{N}]+/gu) ?? []) {
-    const variant = spelledOutVariant(w);
-    if (variant) spelledOut.add(variant);
-  }
-  if (spelledOut.size > 0) {
-    result += ` ${[...spelledOut].join(" ")}`;
-  }
 
   // Collect all stems (primary + prefix-stripped + fuzzy) for words ≥ 3 chars
   const words = result.match(/\b\w{3,}\b/g);
@@ -239,9 +264,11 @@ function isFtsQueryError(error: unknown): boolean {
 }
 
 /**
- * A query in NFC with everything but letters, digits, underscores and single spaces removed.
+ * Sanitize a query string for FTS5 MATCH syntax.
+ * Removes characters that would cause FTS5 parse errors (/, ., -, etc.) and appends stems
+ * so that morphological variants match indexed stems.
  */
-function sanitizeQueryText(query: string): string {
+function sanitizeFtsQuery(query: string): string {
   // NFC first: a decomposed "ü" is "u" plus a combining mark, and the whitelist below turns
   // that mark into a space — "Rückmeldung" typed on a system that sends NFD searched for "Ru"
   // and "ckmeldung".
@@ -261,27 +288,7 @@ function sanitizeQueryText(query: string): string {
   sanitized = sanitized.replace(/[^\p{L}\p{N}_\s]/gu, " ");
 
   // Collapse multiple spaces
-  return sanitized.replace(/\s+/g, " ").trim();
-}
-
-/**
- * The words full-text search looks for: the sanitized query split at spaces, without words
- * shorter than two characters. The exact-match check in searchHybrid uses the same words, so
- * "contains the query" always means the words that were actually searched.
- */
-function queryWords(query: string): string[] {
-  return sanitizeQueryText(query)
-    .split(" ")
-    .filter((w) => w.length >= 2);
-}
-
-/**
- * Sanitize a query string for FTS5 MATCH syntax.
- * Removes characters that would cause FTS5 parse errors (/, ., -, etc.) and appends stems
- * so that morphological variants match indexed stems.
- */
-function sanitizeFtsQuery(query: string): string {
-  const sanitized = sanitizeQueryText(query);
+  sanitized = sanitized.replace(/\s+/g, " ").trim();
 
   // Reject empty or too-short queries
   if (sanitized.length < 2) return "";
@@ -289,17 +296,20 @@ function sanitizeFtsQuery(query: string): string {
   // Expand each word with all stems (primary + prefix-stripped + fuzzy) using OR groups:
   // "Stundensätze regulatorisch" → "(Stundensätze OR stundensatz) AND (regulatorisch OR regulator)"
   // FTS5 requires explicit AND when mixing OR groups (implicit AND + OR crashes).
-  // A word with an umlaut also gets its spelled-out form and that form's stems ("Grün" → gruen).
-  const words = queryWords(query);
+  // Each word also gets its other spellings (spellingVariants): "Grün" → gruen and its stems,
+  // "Gruen" → grün. The spelled-out form needs its stems because the index stems ASCII words
+  // only; an umlaut variant matches the umlaut word and its stems through the tokenizer's folding.
+  const words = sanitized.split(/\s+/).filter((w) => w.length >= 2);
   if (words.length > 0) {
     const groups: string[] = [];
     let hasOrGroup = false;
     for (const w of words) {
-      const variant = spelledOutVariant(w);
+      const { spelledOut, withUmlauts } = spellingVariants(w);
       const stems = [
         ...new Set([
           ...collectStems(w),
-          ...(variant ? [variant, ...collectStems(variant)] : []),
+          ...(spelledOut ? [spelledOut, ...collectStems(spelledOut)] : []),
+          ...withUmlauts,
         ]),
       ];
       if (stems.length > 0) {
@@ -317,40 +327,57 @@ function sanitizeFtsQuery(query: string): string {
 }
 
 /**
- * Query words up to this many characters (after foldSpelling) only count as an exact match when
- * they stand alone as a word. Longer ones count anywhere, also inside a compound.
+ * Query words of up to this many letters (as typed: "Tür" is three) only count as an exact match
+ * when they stand alone as a word. Longer ones count anywhere, also inside a compound.
  *
  * German builds compounds, so "Kontingent" should find "Wochenkontingent" and "Backup" should find
  * "Backups" — a word-boundary rule would miss both, and the plural and genitive of every name.
- * For short words a substring is mostly noise: "KI" is in "Kinder", "Ada" in "Adapter", "App" in
- * "Apple". Three is where that noise stops being the rule; a four-letter word can still hit a
+ * For short words a substring is mostly noise: "KI" is in "Kinder", "Bot" in "Botschaft", "App"
+ * in "Apple". Three is where that noise stops being the rule; a four-letter word can still hit a
  * longer one ("Test" in "latest"), which then only moves up among the entries that contain it.
  */
 const WHOLE_WORD_MAX_LENGTH = 3;
 
+const ALNUM = "[\\p{L}\\p{N}]";
+const NOT_ALNUM = "[^\\p{L}\\p{N}]";
+
 /**
- * One test per distinct query word for the exact-match check in searchHybrid. Each takes text
- * already passed through foldSpelling. Empty when the query has no word full-text search would
- * look for — then nothing is an exact match and the ranking is the plain hybrid one.
+ * One test per distinct query word for the exact-match check in searchHybrid, each over text
+ * already passed through foldSpelling. Empty when the query has no such word — then nothing is
+ * an exact match and the ranking is the plain hybrid one.
+ *
+ * A word is what the query separates by spaces. A word with punctuation inside — a date like
+ * "2026-09-15", an id like "dec-012", "KI-Agent" — counts only with its parts in that order and
+ * nothing but punctuation or spaces between them. Checked part by part, "2026-09-15" was in every
+ * entry that mentions 2026 somewhere and has a 09 and a 15 anywhere else. A word whose letters
+ * and digits add up to one character is ignored, as in full-text search.
  */
 function exactWordTests(query: string): Array<(folded: string) => boolean> {
-  // An empty word would be "contained" in everything — never let one through.
-  const words = [
-    ...new Set(
-      queryWords(query)
-        .map(foldSpelling)
-        .filter((w) => w.length > 0),
-    ),
-  ];
-  return words.map((w) => {
-    if (w.length > WHOLE_WORD_MAX_LENGTH) return (text) => text.includes(w);
-    const escaped = w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const whole = new RegExp(
-      `(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`,
-      "u",
-    );
-    return (text) => whole.test(text);
-  });
+  const tests = new Map<string, (folded: string) => boolean>();
+  for (const word of query.normalize("NFC").split(/\s+/)) {
+    const parts = word.split(/[^\p{L}\p{N}]+/u).filter((p) => p.length > 0);
+    if (parts.join("").length < 2) continue;
+    const folded = parts.map(foldSpelling);
+    // An empty part would be "contained" in everything — never let one through.
+    if (folded.some((p) => p.length === 0)) continue;
+    // A short part at either end must not continue into a longer word there.
+    const start =
+      (parts[0] as string).length <= WHOLE_WORD_MAX_LENGTH
+        ? `(?<!${ALNUM})`
+        : "";
+    const end =
+      (parts[parts.length - 1] as string).length <= WHOLE_WORD_MAX_LENGTH
+        ? `(?!${ALNUM})`
+        : "";
+    const body = folded
+      .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join(`${NOT_ALNUM}+`);
+    const pattern = start + body + end;
+    if (tests.has(pattern)) continue;
+    const re = new RegExp(pattern, "u");
+    tests.set(pattern, (text) => re.test(text));
+  }
+  return [...tests.values()];
 }
 
 function rowToMemory(row: MemoryRow): Memory {
@@ -934,8 +961,13 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       //   entry is in, and callers that merge lists sort by it first (mergeSearchResults).
       // - Only candidates are ranked: the full-text and vector pools of `poolSize` each. An entry
       //   that contains the word but is in neither pool is not found, as before.
+      // - `allowIds` (tag and connection filters) applies here, before the sort and the limit.
+      //   Filtered after the cut, as search() used to, the exact matches outside the filter took
+      //   every slot and a filtered search came back empty where it used to find entries.
+      const allowIds = opts.allowIds;
       return scored
         .filter((s) => s.exact || s.score >= opts.minScore)
+        .filter((s) => !allowIds || allowIds.has(s.id))
         .sort((a, b) => Number(b.exact) - Number(a.exact))
         .slice(0, opts.limit)
         .map((s) => ({

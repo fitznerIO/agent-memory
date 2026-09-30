@@ -3,7 +3,8 @@
  *
  * Bug: with the vector weight above the full-text weight, an entry that never mentions a rare
  * name could come back first — normalised score 1.0 — while the entries that do mention it sat
- * on positions 3, 5 and 8 (the case in the first test, with a synthetic name). Fix: an entry whose
+ * on positions 3, 5 and 8 in a real store (the first test rebuilds the case with a synthetic
+ * name; there they land on 4, 6 and 8). Fix: an entry whose
  * title or text contains every query word literally comes before every entry that does not; within
  * both groups the hybrid order stays.
  *
@@ -156,9 +157,7 @@ describe("searchHybrid: exact matches first", () => {
    */
   async function indexFillers(count: number) {
     for (let i = 0; i < count; i++) {
-      await idx.index(
-        makeMemory(`filler-${i}`, FILLER[i % FILLER.length]!, i),
-      );
+      await idx.index(makeMemory(`filler-${i}`, FILLER[i % FILLER.length]!, i));
     }
   }
 
@@ -237,11 +236,9 @@ describe("searchHybrid: exact matches first", () => {
     );
     await idx.index(makeMemory("only-second", "Marrowby called twice", 1.5));
 
-    const results = await idx.searchHybrid(
-      "quillfeather marrowby",
-      QUERY_VEC,
-      { limit: 10 },
-    );
+    const results = await idx.searchHybrid("quillfeather marrowby", QUERY_VEC, {
+      limit: 10,
+    });
 
     expect(results[0]!.memory.metadata.id).toBe("both");
     expect(results[0]!.exactMatch).toBe(true);
@@ -255,9 +252,8 @@ describe("searchHybrid: exact matches first", () => {
 
   // Both spellings of an umlaut are the same word, whichever one the query uses — and the entry is
   // found at all, not only ranked: both targets are outside the vector pool, so only full-text
-  // search can bring them in. The query adds the spelled-out form (finds "Rueckmeldung" for
-  // "Rückmeldung"), the index stores it next to the umlaut word (finds "Rückmeldung" for
-  // "Rueckmeldung").
+  // search can bring them in. The query adds the other spellings: "Rückmeldung" also searches
+  // "rueckmeldung", "Rueckmeldung" also searches "rückmeldung". The index is not changed.
   describe("umlauts and their spelled-out form", () => {
     beforeEach(async () => {
       await indexFillers(35);
@@ -291,6 +287,30 @@ describe("searchHybrid: exact matches first", () => {
     }
   });
 
+  test("one word may mix both spellings", async () => {
+    await indexFillers(35);
+    await idx.index(makeMemory("mixed", "Das Steuerbüro hat angerufen", 40));
+
+    const results = await idx.searchHybrid("Steuerbuero", QUERY_VEC, {
+      limit: 10,
+    });
+
+    expect(results[0]!.memory.metadata.id).toBe("mixed");
+    expect(results[0]!.exactMatch).toBe(true);
+  });
+
+  test("capital ẞ is ß, in the query and in the text", async () => {
+    await indexFillers(35);
+    await idx.index(makeMemory("capital", "GROẞE STRAẞE GESPERRT", 40));
+    await idx.index(makeMemory("spelled", "Die Strasse ist gesperrt", 41));
+
+    for (const query of ["Strasse", "STRAẞE", "Straße"]) {
+      const results = await idx.searchHybrid(query, QUERY_VEC, { limit: 10 });
+      expect(ids(results).slice(0, 2).sort()).toEqual(["capital", "spelled"]);
+      expect(results.slice(0, 2).every((r) => r.exactMatch)).toBe(true);
+    }
+  });
+
   test("a word of up to three letters counts only as a whole word", async () => {
     await indexFillers(35);
     await idx.index(makeMemory("whole", "Der KI-Agent schreibt Berichte", 40));
@@ -303,6 +323,67 @@ describe("searchHybrid: exact matches first", () => {
     expect(results[0]!.exactMatch).toBe(true);
     const inside = results.find((r) => r.memory.metadata.id === "inside");
     expect(inside?.exactMatch).toBe(false);
+  });
+
+  test("the three-letter rule counts letters as typed, not spelled out", async () => {
+    await indexFillers(35);
+    // "Tür" and "Maß" are three letters; spelled out ("tuer", "mass") they would be four and
+    // match inside other words. Both decoys are near vector neighbours, so they are candidates.
+    await idx.index(makeMemory("door", "Die Tür klemmt wieder", 40));
+    await idx.index(makeMemory("country", "Die Türkei-Reise ist gebucht", 0.5));
+    await idx.index(makeMemory("measure", "Das Maß ist voll", 41));
+    await idx.index(makeMemory("massage", "Die Massage war gut", 1.5));
+
+    const door = await idx.searchHybrid("Tür", QUERY_VEC, { limit: 10 });
+    expect(door[0]!.memory.metadata.id).toBe("door");
+    expect(
+      door.filter((r) => r.exactMatch).map((r) => r.memory.metadata.id),
+    ).toEqual(["door"]);
+    expect(
+      door.find((r) => r.memory.metadata.id === "country")?.exactMatch,
+    ).toBe(false);
+
+    const measure = await idx.searchHybrid("Maß", QUERY_VEC, { limit: 10 });
+    expect(measure[0]!.memory.metadata.id).toBe("measure");
+    expect(
+      measure.find((r) => r.memory.metadata.id === "massage")?.exactMatch,
+    ).toBe(false);
+  });
+
+  test("a date or an id counts only with its parts in order, not scattered", async () => {
+    await indexFillers(35);
+    await idx.index(
+      makeMemory("date", "Kick-off on 2026-09-15 in the small room", 40),
+    );
+    // Has 2026, 09 and 15 — apart. A full-text match too (the parts are separate words there).
+    await idx.index(
+      makeMemory("scattered", "In 2026 we plan 09 workshops for 15 people", 41),
+    );
+    await idx.index(makeMemory("id", "Superseded by dec-012 last week", 42));
+    // "dec" and "012" only as parts of longer words. A near vector neighbour, so a candidate.
+    await idx.index(
+      makeMemory("id-longer", "See dec-0120 and the dec 012b draft", 0.5),
+    );
+
+    const byDate = await idx.searchHybrid("2026-09-15", QUERY_VEC, {
+      limit: 10,
+    });
+    expect(byDate[0]!.memory.metadata.id).toBe("date");
+    expect(
+      byDate.filter((r) => r.exactMatch).map((r) => r.memory.metadata.id),
+    ).toEqual(["date"]);
+    expect(
+      byDate.find((r) => r.memory.metadata.id === "scattered")?.exactMatch,
+    ).toBe(false);
+
+    const byId = await idx.searchHybrid("dec-012", QUERY_VEC, { limit: 10 });
+    expect(byId[0]!.memory.metadata.id).toBe("id");
+    expect(
+      byId.filter((r) => r.exactMatch).map((r) => r.memory.metadata.id),
+    ).toEqual(["id"]);
+    expect(
+      byId.find((r) => r.memory.metadata.id === "id-longer")?.exactMatch,
+    ).toBe(false);
   });
 
   test("a longer word counts inside a compound", async () => {
