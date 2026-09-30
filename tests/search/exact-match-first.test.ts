@@ -4,14 +4,13 @@
  * Bug: with the vector weight above the full-text weight, an entry that never mentions a rare
  * name could come back first — normalised score 1.0 — while the entries that do mention it sat
  * on positions 3, 5 and 8 in a real store (the first test rebuilds the case with a synthetic
- * name; there they land on 4, 6 and 8). Fix: an entry whose
- * title or text contains every query word literally comes before every entry that does not; within
- * both groups the hybrid order stays.
+ * name; there they land on 4, 6 and 8). Fix: an entry whose title or text contains every query
+ * word literally comes before every entry that does not; within both groups the hybrid order
+ * stays. Entries that contain the query but are in neither candidate pool are fetched by a
+ * separate full-text query and added; a search without an exact match ranks as before.
  *
- * Like rrf-fallback-rank.test.ts, these tests use the PRODUCTION weights and give every entry a
- * synthetic vector at a known distance from the query, so the vector ranks are fixed and no
- * embedding model is loaded. All words are made up or generic; the tests must not depend on what
- * a real store contains.
+ * Like rrf-fallback-rank.test.ts, these tests use the PRODUCTION weights and synthetic vectors at
+ * known distances. All words are made up or generic.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -22,9 +21,12 @@ import type { SearchIndex } from "../../src/search/types.ts";
 import type { MemoryConfig } from "../../src/shared/config.ts";
 import { createDefaultConfig } from "../../src/shared/config.ts";
 import type { Memory, SearchResult } from "../../src/shared/types.ts";
-
-const DIMS = 384;
-const PROD = createDefaultConfig().hybridDefaults;
+import {
+  DIMS,
+  FIXED_TIME,
+  QUERY_VEC,
+  vectorAtDistance,
+} from "../helpers/synthetic-vectors.ts";
 
 function makeProdConfig(sqlitePath: string): MemoryConfig {
   return {
@@ -32,44 +34,10 @@ function makeProdConfig(sqlitePath: string): MemoryConfig {
     sqlitePath,
     embeddingModel: "Xenova/all-MiniLM-L6-v2",
     embeddingDimensions: DIMS,
-    hybridDefaults: { ...PROD, minScore: 0.0 },
+    hybridDefaults: { ...createDefaultConfig().hybridDefaults, minScore: 0.0 },
     maxCoreTokens: 4000,
   };
 }
-
-function normalize(v: Float32Array): Float32Array {
-  let norm = 0;
-  for (let i = 0; i < DIMS; i++) norm += v[i]! * v[i]!;
-  norm = Math.sqrt(norm);
-  for (let i = 0; i < DIMS; i++) v[i] = v[i]! / norm;
-  return v;
-}
-
-const QUERY_VEC = normalize(
-  (() => {
-    const v = new Float32Array(DIMS);
-    for (let i = 0; i < DIMS; i++) v[i] = Math.sin(i * 0.37) + 0.1;
-    return v;
-  })(),
-);
-
-const NOISE = normalize(
-  (() => {
-    const v = new Float32Array(DIMS);
-    for (let i = 0; i < DIMS; i++) v[i] = Math.cos(i * 1.13) - 0.05;
-    return v;
-  })(),
-);
-
-/** Vector whose similarity to QUERY_VEC falls as `distance` grows; 0 is the closest neighbour. */
-function vectorAtDistance(distance: number): Float32Array {
-  const v = new Float32Array(DIMS);
-  const t = distance * 0.12;
-  for (let i = 0; i < DIMS; i++) v[i] = QUERY_VEC[i]! + t * NOISE[i]!;
-  return normalize(v);
-}
-
-const FIXED_TIME = Date.UTC(2026, 0, 15);
 
 /** Same type, tags and timestamps for everyone, so no boost can flip the order. */
 function makeMemory(
@@ -124,6 +92,10 @@ const FILLER = [
 
 const ids = (results: SearchResult[]) =>
   results.map((r) => r.memory.metadata.id);
+const exactIds = (results: SearchResult[]) =>
+  ids(results.filter((r) => r.exactMatch));
+const find = (results: SearchResult[], id: string) =>
+  results.find((r) => r.memory.metadata.id === id);
 
 /** Scores never rise within a run of results — the hybrid order. */
 function expectFallingScores(results: SearchResult[]) {
@@ -153,13 +125,16 @@ describe("searchHybrid: exact matches first", () => {
   /**
    * `count` fillers at vector distances 0, 1, 2, … — `filler-0` is the query's closest neighbour.
    * With limit 10 the vector pool holds 30, so anything at distance 40 or more is outside it and
-   * reaches the candidates only through full-text search.
+   * reaches the candidates only through full-text search. Distances 0.5 and 1.5 sit inside it.
    */
   async function indexFillers(count: number) {
     for (let i = 0; i < count; i++) {
       await idx.index(makeMemory(`filler-${i}`, FILLER[i % FILLER.length]!, i));
     }
   }
+
+  const search = (query: string, options = {}) =>
+    idx.searchHybrid(query, QUERY_VEC, { limit: 10, ...options });
 
   // The reported case: three entries name something rare, a closer vector neighbour does not.
   // By score alone they land on positions 4, 6 and 8 behind `filler-0`, which scores 1.0.
@@ -175,17 +150,14 @@ describe("searchHybrid: exact matches first", () => {
       makeMemory("name-c", "Reminder: invoice for Quillfeather", 42),
     );
 
-    const results = await idx.searchHybrid("Quillfeather", QUERY_VEC, {
-      limit: 10,
-    });
+    const results = await search("Quillfeather");
 
     expect(ids(results).slice(0, 3).sort()).toEqual([
       "name-a",
       "name-b",
       "name-c",
     ]);
-    expect(results.slice(0, 3).every((r) => r.exactMatch === true)).toBe(true);
-    expect(results.slice(3).every((r) => r.exactMatch === false)).toBe(true);
+    expect(exactIds(results)).toHaveLength(3);
 
     // The scenario really is the bug: the best score belongs to an entry without the name. It
     // keeps its score and now comes right after the exact matches.
@@ -212,9 +184,7 @@ describe("searchHybrid: exact matches first", () => {
       ),
     );
 
-    const results = await idx.searchHybrid("quillfeather", QUERY_VEC, {
-      limit: 10,
-    });
+    const results = await search("quillfeather");
 
     expect(ids(results).slice(0, 2).sort()).toEqual(["in-text", "in-title"]);
     expect(results[2]!.exactMatch).toBe(false);
@@ -222,8 +192,8 @@ describe("searchHybrid: exact matches first", () => {
 
   test("every query word must be there, in any order and any distance apart", async () => {
     await indexFillers(35);
-    // Only `both` is a full-text match (FTS combines the words with AND). The two single-word
-    // entries are close vector neighbours, so they are candidates too — and must not count.
+    // The single-word entries are close vector neighbours, so they are candidates — and must
+    // not count.
     await idx.index(
       makeMemory(
         "both",
@@ -236,24 +206,16 @@ describe("searchHybrid: exact matches first", () => {
     );
     await idx.index(makeMemory("only-second", "Marrowby called twice", 1.5));
 
-    const results = await idx.searchHybrid("quillfeather marrowby", QUERY_VEC, {
-      limit: 10,
-    });
+    const results = await search("quillfeather marrowby");
 
-    expect(results[0]!.memory.metadata.id).toBe("both");
-    expect(results[0]!.exactMatch).toBe(true);
-    const partial = results.filter((r) =>
-      ["only-first", "only-second"].includes(r.memory.metadata.id),
-    );
-    expect(partial).toHaveLength(2);
-    expect(partial.every((r) => r.exactMatch === false)).toBe(true);
-    expect(results.filter((r) => r.exactMatch)).toHaveLength(1);
+    expect(exactIds(results)).toEqual(["both"]);
+    expect(find(results, "only-first")?.exactMatch).toBe(false);
+    expect(find(results, "only-second")?.exactMatch).toBe(false);
   });
 
   // Both spellings of an umlaut are the same word, whichever one the query uses — and the entry is
-  // found at all, not only ranked: both targets are outside the vector pool, so only full-text
-  // search can bring them in. The query adds the other spellings: "Rückmeldung" also searches
-  // "rueckmeldung", "Rueckmeldung" also searches "rückmeldung". The index is not changed.
+  // found at all, not only ranked: both targets are outside the vector pool, and the regular
+  // full-text query cannot connect the spellings. The candidate query can.
   describe("umlauts and their spelled-out form", () => {
     beforeEach(async () => {
       await indexFillers(35);
@@ -268,7 +230,6 @@ describe("searchHybrid: exact matches first", () => {
     for (const query of [
       "Rueckmeldung",
       "Rückmeldung",
-      "RÜCKMELDUNG",
       "Rückmeldung".normalize("NFD"), // u + combining diaeresis
       "Größe",
       "Groesse",
@@ -276,53 +237,65 @@ describe("searchHybrid: exact matches first", () => {
     ]) {
       const label = query.normalize("NFC") === query ? query : `${query} (NFD)`;
       test(`"${label}" finds both spellings and puts them first`, async () => {
-        const results = await idx.searchHybrid(query, QUERY_VEC, {
-          limit: 10,
-        });
+        const results = await search(query);
 
         expect(ids(results).slice(0, 2).sort()).toEqual(["spelled", "umlaut"]);
-        expect(results.slice(0, 2).every((r) => r.exactMatch)).toBe(true);
-        expect(results[2]!.exactMatch).toBe(false);
+        expect(exactIds(results)).toHaveLength(2);
       });
     }
   });
 
-  test("one word may mix both spellings", async () => {
+  test("a word may mix both spellings, in any number of places", async () => {
     await indexFillers(35);
-    await idx.index(makeMemory("mixed", "Das Steuerbüro hat angerufen", 40));
+    await idx.index(makeMemory("office", "Das Steuerbüro hat angerufen", 40));
+    await idx.index(makeMemory("walker", "Ein Fussgänger wartet", 41));
+    await idx.index(
+      makeMemory("crossing", "Der Fußgängerstraßenübergang ist gesperrt", 42),
+    );
 
-    const results = await idx.searchHybrid("Steuerbuero", QUERY_VEC, {
-      limit: 10,
-    });
-
-    expect(results[0]!.memory.metadata.id).toBe("mixed");
-    expect(results[0]!.exactMatch).toBe(true);
+    expect(exactIds(await search("Steuerbuero"))).toEqual(["office"]);
+    // The long compound contains "Fussgänger" too.
+    expect(exactIds(await search("Fußgaenger")).sort()).toEqual([
+      "crossing",
+      "walker",
+    ]);
+    // Four pairs, all written the other way.
+    expect(exactIds(await search("Fussgaengerstrassenuebergang"))).toEqual([
+      "crossing",
+    ]);
   });
 
-  test("capital ẞ is ß, in the query and in the text", async () => {
+  test("capital ẞ is ß, other accents are dropped, decomposed text is found", async () => {
     await indexFillers(35);
     await idx.index(makeMemory("capital", "GROẞE STRAẞE GESPERRT", 40));
-    await idx.index(makeMemory("spelled", "Die Strasse ist gesperrt", 41));
+    await idx.index(makeMemory("street", "Die Strasse ist gesperrt", 41));
+    await idx.index(makeMemory("accent", "Treffen im Cafe am Markt", 42));
+    await idx.index(
+      makeMemory("nfd", "Die Nachfrage kam spät".normalize("NFD"), 43),
+    );
 
-    for (const query of ["Strasse", "STRAẞE", "Straße"]) {
-      const results = await idx.searchHybrid(query, QUERY_VEC, { limit: 10 });
-      expect(ids(results).slice(0, 2).sort()).toEqual(["capital", "spelled"]);
-      expect(results.slice(0, 2).every((r) => r.exactMatch)).toBe(true);
+    for (const query of ["Strasse", "STRAẞE"]) {
+      expect(exactIds(await search(query)).sort()).toEqual([
+        "capital",
+        "street",
+      ]);
     }
+    expect(exactIds(await search("Café"))).toEqual(["accent"]);
+    expect(exactIds(await search("spät"))).toEqual(["nfd"]);
   });
 
   test("a word of up to three letters counts only as a whole word", async () => {
     await indexFillers(35);
     await idx.index(makeMemory("whole", "Der KI-Agent schreibt Berichte", 40));
-    // Contains "ki" only inside a word. A near vector neighbour, so it is a candidate.
-    await idx.index(makeMemory("inside", "Kinder spielen im Garten", 0.5));
+    // "ki" at the start and at the end of a longer word. Near vector neighbours: candidates.
+    await idx.index(makeMemory("start", "Kinder spielen im Garten", 0.5));
+    await idx.index(makeMemory("end", "Das Wiki ist veraltet", 1.5));
 
-    const results = await idx.searchHybrid("KI", QUERY_VEC, { limit: 10 });
+    const results = await search("KI");
 
-    expect(results[0]!.memory.metadata.id).toBe("whole");
-    expect(results[0]!.exactMatch).toBe(true);
-    const inside = results.find((r) => r.memory.metadata.id === "inside");
-    expect(inside?.exactMatch).toBe(false);
+    expect(exactIds(results)).toEqual(["whole"]);
+    expect(find(results, "start")?.exactMatch).toBe(false);
+    expect(find(results, "end")?.exactMatch).toBe(false);
   });
 
   test("the three-letter rule counts letters as typed, not spelled out", async () => {
@@ -334,20 +307,33 @@ describe("searchHybrid: exact matches first", () => {
     await idx.index(makeMemory("measure", "Das Maß ist voll", 41));
     await idx.index(makeMemory("massage", "Die Massage war gut", 1.5));
 
-    const door = await idx.searchHybrid("Tür", QUERY_VEC, { limit: 10 });
-    expect(door[0]!.memory.metadata.id).toBe("door");
-    expect(
-      door.filter((r) => r.exactMatch).map((r) => r.memory.metadata.id),
-    ).toEqual(["door"]);
-    expect(
-      door.find((r) => r.memory.metadata.id === "country")?.exactMatch,
-    ).toBe(false);
+    const door = await search("Tür");
+    expect(exactIds(door)).toEqual(["door"]);
+    expect(find(door, "country")?.exactMatch).toBe(false);
 
-    const measure = await idx.searchHybrid("Maß", QUERY_VEC, { limit: 10 });
-    expect(measure[0]!.memory.metadata.id).toBe("measure");
-    expect(
-      measure.find((r) => r.memory.metadata.id === "massage")?.exactMatch,
-    ).toBe(false);
+    const measure = await search("Maß");
+    expect(exactIds(measure)).toEqual(["measure"]);
+    expect(find(measure, "massage")?.exactMatch).toBe(false);
+  });
+
+  test("a longer word counts inside other words, at the start and at the end", async () => {
+    await indexFillers(35);
+    // At the start: found by the candidate query ("kontingent"*), outside the vector pool.
+    await idx.index(
+      makeMemory("start", "Die Kontingentgrenze ist erreicht", 40),
+    );
+    // At the end: no full-text query finds it, so it counts only as a near vector neighbour.
+    await idx.index(
+      makeMemory("end", "Das Wochenkontingent ist fast aufgebraucht", 0.5),
+    );
+    // Four letters are no longer "short".
+    await idx.index(makeMemory("beat", "Der Wochentakt steht", 1.5));
+
+    expect(exactIds(await search("Kontingent")).sort()).toEqual([
+      "end",
+      "start",
+    ]);
+    expect(exactIds(await search("Takt"))).toEqual(["beat"]);
   });
 
   test("a date or an id counts only with its parts in order, not scattered", async () => {
@@ -355,83 +341,113 @@ describe("searchHybrid: exact matches first", () => {
     await idx.index(
       makeMemory("date", "Kick-off on 2026-09-15 in the small room", 40),
     );
-    // Has 2026, 09 and 15 — apart. A full-text match too (the parts are separate words there).
+    // Has 2026, 09 and 15 — apart.
     await idx.index(
       makeMemory("scattered", "In 2026 we plan 09 workshops for 15 people", 41),
     );
     await idx.index(makeMemory("id", "Superseded by dec-012 last week", 42));
-    // "dec" and "012" only as parts of longer words. A near vector neighbour, so a candidate.
+    // "dec" and "012" without a separator or as parts of longer words. A candidate.
     await idx.index(
-      makeMemory("id-longer", "See dec-0120 and the dec 012b draft", 0.5),
+      makeMemory(
+        "id-other",
+        "See dec012, dec-0120 and the dec 012b draft",
+        0.5,
+      ),
     );
 
-    const byDate = await idx.searchHybrid("2026-09-15", QUERY_VEC, {
-      limit: 10,
-    });
-    expect(byDate[0]!.memory.metadata.id).toBe("date");
-    expect(
-      byDate.filter((r) => r.exactMatch).map((r) => r.memory.metadata.id),
-    ).toEqual(["date"]);
-    expect(
-      byDate.find((r) => r.memory.metadata.id === "scattered")?.exactMatch,
-    ).toBe(false);
+    const byDate = await search("2026-09-15");
+    expect(exactIds(byDate)).toEqual(["date"]);
+    expect(find(byDate, "scattered")?.exactMatch).toBe(false);
 
-    const byId = await idx.searchHybrid("dec-012", QUERY_VEC, { limit: 10 });
-    expect(byId[0]!.memory.metadata.id).toBe("id");
-    expect(
-      byId.filter((r) => r.exactMatch).map((r) => r.memory.metadata.id),
-    ).toEqual(["id"]);
-    expect(
-      byId.find((r) => r.memory.metadata.id === "id-longer")?.exactMatch,
-    ).toBe(false);
+    const byId = await search("dec-012");
+    expect(exactIds(byId)).toEqual(["id"]);
+    expect(find(byId, "id-other")?.exactMatch).toBe(false);
   });
 
-  test("a longer word counts inside a compound", async () => {
+  test("a date is found even when many entries have its numbers apart", async () => {
+    // 40 entries with 2026, 09 and 15 apart fill both pools. The two with the date are long, so
+    // BM25 ranks them last among the 42 full-text matches — outside the top 30. The candidate
+    // query looks for the date as a phrase.
+    for (let i = 0; i < 40; i++) {
+      await idx.index(
+        makeMemory(
+          `apart-${i}`,
+          `In 2026 we plan 09 talks for 15 people (${i})`,
+          i,
+        ),
+      );
+    }
+    const long = FILLER.slice(0, 6).join(". ");
+    await idx.index(makeMemory("date-a", `${long}. Due 2026-09-15.`, 50));
+    await idx.index(makeMemory("date-b", `${long}. Held on 2026/09/15.`, 51));
+
+    const results = await search("2026-09-15");
+
+    expect(ids(results).slice(0, 2).sort()).toEqual(["date-a", "date-b"]);
+    expect(exactIds(results)).toHaveLength(2);
+  });
+
+  test("an entry only the candidate query finds does not move the other entries' scores", async () => {
     await indexFillers(35);
-    // Full-text search matches whole words, so the compound is a candidate only as a near vector
-    // neighbour — the exact-match check itself looks for the word anywhere.
+    const before = await search("Kontingent");
+
+    // Outside both pools: no vector neighbour, no match for the regular full-text query.
     await idx.index(
-      makeMemory("compound", "Das Wochenkontingent ist fast aufgebraucht", 0.5),
+      makeMemory("start", "Die Kontingentgrenze ist erreicht", 60),
     );
+    const after = await search("Kontingent");
 
-    const results = await idx.searchHybrid("Kontingent", QUERY_VEC, {
-      limit: 10,
-    });
+    expect(exactIds(after)).toEqual(["start"]);
+    const scoreOf = new Map(before.map((r) => [r.memory.metadata.id, r.score]));
+    for (const r of after.slice(1)) {
+      // Not toBe: recency is computed from Date.now(), which moves between the two searches.
+      expect(r.score).toBeCloseTo(scoreOf.get(r.memory.metadata.id)!, 10);
+    }
+  });
 
-    expect(results[0]!.memory.metadata.id).toBe("compound");
-    expect(results[0]!.exactMatch).toBe(true);
+  test("query words that are FTS5 operators still find their entry", async () => {
+    await indexFillers(35);
+    await idx.index(makeMemory("pudding", "bread and butter pudding", 40));
+
+    // The regular full-text query rejects "bread AND AND AND …" and falls back to vectors; the
+    // candidate query quotes every word.
+    const results = await search("bread AND butter");
+
+    expect(exactIds(results)).toEqual(["pudding"]);
   });
 
   test("minScore never drops an exact match, and still filters the rest", async () => {
     await indexFillers(35);
     await idx.index(makeMemory("name", "Quillfeather confirmed", 40));
 
-    const unfiltered = await idx.searchHybrid("Quillfeather", QUERY_VEC, {
-      limit: 10,
-    });
-    const nameScore = unfiltered.find(
-      (r) => r.memory.metadata.id === "name",
-    )!.score;
-    expect(nameScore).toBeLessThan(0.9); // below the threshold used next
+    const unfiltered = await search("Quillfeather");
+    expect(find(unfiltered, "name")!.score).toBeLessThan(0.9);
 
-    const results = await idx.searchHybrid("Quillfeather", QUERY_VEC, {
-      limit: 10,
-      minScore: 0.9,
-    });
+    const results = await search("Quillfeather", { minScore: 0.9 });
 
     expect(results[0]!.memory.metadata.id).toBe("name");
     expect(results.slice(1).every((r) => r.score >= 0.9)).toBe(true);
     expect(results.length).toBeLessThan(unfiltered.length);
   });
 
-  test("without any exact match the order is the plain hybrid order", async () => {
+  // A search without an exact match must rank exactly as before: the candidates are the regular
+  // full-text pool and the vector pool, nothing else. The decoys contain what the candidate query
+  // finds for these words through the tokenizer's folding ("bürger" is searched as "burger",
+  // "dü" as "du") without containing the words themselves.
+  test("without an exact match the candidates and their order are the plain hybrid ones", async () => {
     await indexFillers(35);
-    await idx.index(makeMemory("name", "Quillfeather confirmed", 40));
+    await idx.index(makeMemory("burger", "Der Burger war kalt", 40));
+    await idx.index(makeMemory("du", "du bist dran", 41));
 
-    for (const query of ["Zeppelinhangar", "a", "–"]) {
-      const results = await idx.searchHybrid(query, QUERY_VEC, { limit: 10 });
+    for (const query of ["Buerger", "due", "Zeppelinhangar", "a", "–"]) {
+      const results = await search(query);
+      const pools = new Set([
+        ...ids(await idx.searchText(query, 30)),
+        ...ids(await idx.searchVector(QUERY_VEC, 30)),
+      ]);
       expect(results.length).toBeGreaterThan(0);
-      expect(results.every((r) => r.exactMatch === false)).toBe(true);
+      expect(exactIds(results)).toEqual([]);
+      expect(ids(results).every((id) => pools.has(id))).toBe(true);
       expectFallingScores(results);
     }
   });

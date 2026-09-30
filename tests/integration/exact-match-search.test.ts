@@ -1,58 +1,29 @@
 /**
  * Exact matches first on the whole `search()` path: project and global store merged, tag and
- * connection filters, the same id in both stores.
+ * connection filters, the extension facade.
  *
- * Each store normalises its own scores, so the best candidate of each gets 1.0. Merged by score
- * alone, a global entry without the query word slipped back in front of a project entry that has
- * it whenever that entry was not also its store's top scorer — and the exact-first order from
- * searchHybrid was silently undone. A filtered search cut its list before filtering, so exact
- * matches outside the filter could take every slot and the search came back empty.
+ * Each store normalises its own scores, so the best candidate of each gets 1.0; merged by score
+ * alone, a global entry without the query word would slip back in front of a project entry that
+ * has it. A filter applied after the list is cut lets entries outside it take its places — with
+ * exact matches moved up, often all of them.
  *
  * The query embedding is replaced by a fixed vector and every entry is indexed with a synthetic
  * vector at a known distance, so no embedding model is loaded.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { createMemoryApi } from "../../src/extensions/facade.ts";
 import { createMemorySystem } from "../../src/index.ts";
 import type { MemorySystem } from "../../src/index.ts";
 import type { SearchIndex } from "../../src/search/types.ts";
 import type { Memory } from "../../src/shared/types.ts";
 import { cleanupTempDir, createTempDir } from "../helpers/fixtures.ts";
-
-const DIMS = 384;
-
-function normalize(v: Float32Array): Float32Array {
-  let norm = 0;
-  for (let i = 0; i < DIMS; i++) norm += v[i]! * v[i]!;
-  norm = Math.sqrt(norm);
-  for (let i = 0; i < DIMS; i++) v[i] = v[i]! / norm;
-  return v;
-}
-
-const QUERY_VEC = normalize(
-  (() => {
-    const v = new Float32Array(DIMS);
-    for (let i = 0; i < DIMS; i++) v[i] = Math.sin(i * 0.37) + 0.1;
-    return v;
-  })(),
-);
-
-const NOISE = normalize(
-  (() => {
-    const v = new Float32Array(DIMS);
-    for (let i = 0; i < DIMS; i++) v[i] = Math.cos(i * 1.13) - 0.05;
-    return v;
-  })(),
-);
-
-function vectorAtDistance(distance: number): Float32Array {
-  const v = new Float32Array(DIMS);
-  const t = distance * 0.12;
-  for (let i = 0; i < DIMS; i++) v[i] = QUERY_VEC[i]! + t * NOISE[i]!;
-  return normalize(v);
-}
-
-const FIXED_TIME = Date.UTC(2026, 0, 15);
+import {
+  DIMS,
+  FIXED_TIME,
+  QUERY_VEC,
+  vectorAtDistance,
+} from "../helpers/synthetic-vectors.ts";
 
 function makeMemory(
   id: string,
@@ -78,13 +49,13 @@ function makeMemory(
   };
 }
 
-/** Index an entry together with its knowledge row and tags, so tag filters can see it. */
-async function addTagged(
+/** Index an entry with its knowledge row and tags, so tag filters and enrichment can see it. */
+async function add(
   index: SearchIndex,
   id: string,
   content: string,
   distance: number,
-  tags: string[],
+  tags: string[] = ["test"],
 ) {
   await index.index(makeMemory(id, content, distance, tags));
   const iso = new Date(FIXED_TIME).toISOString();
@@ -143,23 +114,32 @@ describe("search(): exact matches first", () => {
    * pool 15) — so the closest filler outscores it and the project's 1.0 goes to an entry
    * without the name.
    */
-  async function indexProjectWithName() {
+  async function addProjectWithName() {
     for (let i = 0; i < 16; i++) {
-      await system.searchIndex.index(
-        makeMemory(`project-filler-${i}`, `project filler note ${i}`, i),
+      await add(
+        system.searchIndex,
+        `project-filler-${i}`,
+        `filler note ${i}`,
+        i,
       );
     }
-    await system.searchIndex.index(
-      makeMemory("project-name", "Meeting with Quillfeather on Monday", 20),
+    await add(
+      system.searchIndex,
+      "project-name",
+      "Meeting with Quillfeather on Monday",
+      20,
     );
   }
 
   test("the project entry with the name comes before a global entry scoring 1.0", async () => {
     await start(true);
-    await indexProjectWithName();
+    await addProjectWithName();
     // Global: one entry without the name — alone in its store, so it scores 1.0.
-    await system.globalSearchIndex!.index(
-      makeMemory("global-other", "general notes about meetings", 0),
+    await add(
+      system.globalSearchIndex!,
+      "global-other",
+      "general notes about meetings",
+      0,
     );
 
     const out = await system.search({
@@ -168,27 +148,33 @@ describe("search(): exact matches first", () => {
       minScore: 0,
     });
 
-    const first = out.results[0]!;
-    expect(first.id).toBe("project-name");
-    expect(first.exactMatch).toBe(true);
-    expect(first.score).toBeLessThan(1);
-
+    expect(out.results[0]!.id).toBe("project-name");
+    expect(out.results[0]!.exactMatch).toBe(true);
+    expect(out.results[0]!.score).toBeLessThan(1);
     const global = out.results.find((r) => r.id === "global-other");
     expect(global?.storeSource).toBe("global");
     expect(global?.score).toBe(1);
-    expect(global?.exactMatch).toBe(false);
-    expect(out.results.slice(1).every((r) => r.exactMatch === false)).toBe(
-      true,
-    );
+    expect(out.results.slice(1).every((r) => !r.exactMatch)).toBe(true);
+
+    // The extension facade passes the flag and the order through.
+    const hits = await createMemoryApi(system).search("Quillfeather", {
+      limit: 5,
+    });
+    expect(hits[0]!.id).toBe("project-name");
+    expect(hits[0]!.exactMatch).toBe(true);
   });
 
-  // Ids are numbered per store, so the same id can name two different entries. Keeping the
-  // project copy regardless dropped the only one that contains the query.
-  test("with the same id in both stores, the copy that contains the query is kept", async () => {
+  // Ids are numbered per store, so the same id can name two different entries. As before, the
+  // project copy is kept — merge and enrichment go by id, and mixing the two stores would pair
+  // one entry's text with the other's title and tags.
+  test("with the same id in both stores the project copy is kept, as before", async () => {
     await start(true);
-    await indexProjectWithName();
-    await system.globalSearchIndex!.index(
-      makeMemory("project-filler-3", "Quillfeather signed the lease", 0),
+    await addProjectWithName();
+    await add(
+      system.globalSearchIndex!,
+      "project-filler-3",
+      "Quillfeather signed the lease",
+      0,
     );
 
     const out = await system.search({
@@ -199,18 +185,17 @@ describe("search(): exact matches first", () => {
 
     const twins = out.results.filter((r) => r.id === "project-filler-3");
     expect(twins).toHaveLength(1);
-    expect(twins[0]!.storeSource).toBe("global");
-    expect(twins[0]!.exactMatch).toBe(true);
-    expect(out.results.slice(0, 2).every((r) => r.exactMatch)).toBe(true);
+    expect(twins[0]!.storeSource).toBe("project");
+    expect(twins[0]!.content).toBe("filler note 3");
   });
 
-  // 30 untagged entries contain the word; the tagged ones are its nearest vector neighbours and
-  // do not. Filtered after the cut (limit 5 → 25 kept), the exact matches took all 25 slots and
-  // the tagged entries never reached the filter.
+  // 30 entries outside the tag contain the word; the tagged ones are its nearest vector
+  // neighbours and do not. Filtered after the cut (limit 5 → 25 kept), the exact matches took all
+  // 25 places and the tagged entries never reached the filter.
   test("a tag filter still finds its entries when many entries outside it contain the word", async () => {
-    await start(false);
+    await start(true);
     for (let i = 0; i < 30; i++) {
-      await addTagged(
+      await add(
         system.searchIndex,
         `other-${i}`,
         `Quillfeather note number ${i}`,
@@ -219,7 +204,7 @@ describe("search(): exact matches first", () => {
       );
     }
     for (let i = 0; i < 3; i++) {
-      await addTagged(
+      await add(
         system.searchIndex,
         `scoped-${i}`,
         `project meeting summary ${i}`,
@@ -227,12 +212,19 @@ describe("search(): exact matches first", () => {
         ["proj/x"],
       );
     }
-    await addTagged(
+    await add(
       system.searchIndex,
       "scoped-name",
       "Quillfeather joined the project",
       60,
       ["proj/x"],
+    );
+    // An exact match in the global store, outside the filter.
+    await add(
+      system.globalSearchIndex!,
+      "global-name",
+      "Quillfeather in the global store",
+      0,
     );
 
     const out = await system.search({
@@ -253,7 +245,7 @@ describe("search(): exact matches first", () => {
   test("tag and connection filter together: an entry must pass both", async () => {
     await start(false);
     for (let i = 0; i < 30; i++) {
-      await addTagged(
+      await add(
         system.searchIndex,
         `other-${i}`,
         `Quillfeather note number ${i}`,
@@ -261,14 +253,12 @@ describe("search(): exact matches first", () => {
         ["other"],
       );
     }
-    await addTagged(system.searchIndex, "hub", "the hub entry", 70, ["hub"]);
-    await addTagged(system.searchIndex, "both", "tagged and linked", 0, [
+    await add(system.searchIndex, "hub", "the hub entry", 70, ["hub"]);
+    await add(system.searchIndex, "both", "tagged and linked", 0, ["proj/x"]);
+    await add(system.searchIndex, "tag-only", "tagged, not linked", 1, [
       "proj/x",
     ]);
-    await addTagged(system.searchIndex, "tag-only", "tagged, not linked", 1, [
-      "proj/x",
-    ]);
-    await addTagged(system.searchIndex, "link-only", "linked, not tagged", 2, [
+    await add(system.searchIndex, "link-only", "linked, not tagged", 2, [
       "misc",
     ]);
     await system.searchIndex.insertConnection("hub", "both", "related");

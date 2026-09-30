@@ -61,10 +61,7 @@ export interface SearchResult {
   matchType: "fts" | "vector" | "hybrid";
   source: string;
   storeSource: StoreSource;
-  /**
-   * Hybrid search only: the title or text contains every query word literally. Exact matches
-   * are ranked before all other results, so sort by this first and by `score` second.
-   */
+  /** Hybrid search only: contains the query literally (see README, "Exact matches first"). */
   exactMatch?: boolean;
 }
 
@@ -80,9 +77,8 @@ export interface HybridSearchOptions {
   /** Entry ID the user is currently looking at — connected entries get a boost */
   contextEntryId?: string;
   /**
-   * Only these entry ids may be returned (tag or connection filters). Applied after scoring and
-   * minScore, before exact matches are moved first and `limit` cuts the list — filtering after
-   * the cut let exact matches outside the filter take every slot.
+   * Only these entry ids may be returned (tag or connection filters). Applied before `limit`
+   * cuts the list, so entries outside the filter cannot take its places.
    */
   allowIds?: ReadonlySet<string>;
 }
@@ -129,10 +125,8 @@ export interface MemorySearchOutput {
      */
     score: number;
     /**
-     * The title or text contains every query word literally (case and ä/ae spelling ignored;
-     * words of up to three letters only as a whole word; a date or id like "dec-012" only with
-     * its parts in order). Exact matches come first, whatever their score, and are never dropped
-     * by minScore. Looser than forget's phrase rule.
+     * The title or text contains the query literally (README, "Exact matches first"). These
+     * results come first whatever their score and are never dropped by minScore.
      */
     exactMatch: boolean;
     type: string;

@@ -531,19 +531,14 @@ export function createMemorySystem(
 
     const merged = [...projectResults, ...globalTagged];
 
-    // Deduplicate by memory ID, preferring project store — unless only the global copy contains
-    // the query. Ids are numbered per store, so the two copies can be different entries, and
-    // keeping the project one would drop the only exact match.
-    const seen = new Map<string, number>();
+    // Deduplicate by memory ID, preferring project store
+    const seen = new Set<string>();
     const deduped: SearchResult[] = [];
     for (const r of merged) {
       const id = r.memory.metadata.id;
-      const at = seen.get(id);
-      if (at === undefined) {
-        seen.set(id, deduped.length);
+      if (!seen.has(id)) {
+        seen.add(id);
         deduped.push(r);
-      } else if (r.exactMatch === true && deduped[at]?.exactMatch !== true) {
-        deduped[at] = r;
       }
     }
 
@@ -631,15 +626,14 @@ export function createMemorySystem(
         connFilterIds = new Set(ids);
       }
 
-      // Both filters together: an entry must pass each one that is set. searchHybrid applies it
-      // before its limit (see HybridSearchOptions.allowIds).
+      // Both filters together: an entry must pass each one that is set.
       const allowIds =
         tagFilterIds && connFilterIds
           ? new Set([...tagFilterIds].filter((id) => connFilterIds.has(id)))
           : (tagFilterIds ?? connFilterIds ?? undefined);
 
-      // A filtered search keeps its larger candidate pool (limit * 5 → pool limit * 15), so the
-      // scores of the entries it returns are the ones it always had.
+      // A filtered search keeps its larger pool (limit * 5 → limit * 15 per channel), so its
+      // entries keep the scores they always had.
       const fetchLimit = allowIds ? limit * 5 : limit;
       const hybridOptions = {
         limit: fetchLimit,
