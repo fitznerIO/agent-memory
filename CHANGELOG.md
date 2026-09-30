@@ -21,11 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `minScore`, project and global results are merged exact-first, and each result says
   which group it is in: `exactMatch`. Before, a close vector neighbour that never
   mentions a rare name regularly came first with score 1.0 and the entries naming it
-  followed on positions 3, 5 and 8. On a copy of a real 557-entry store, 20
-  words (rare and common): a real match on position 1 for 20 of 20 (before: 3), real
-  matches in the top 10: 70 of 75 (before: 41); two-word queries: position 1 in 7 of 7
-  (before: 2); every probe without an exact match returned the same list as before
-  (12 of 12).
+  followed on positions 3, 5 and 8. On a copy of a real store, 20 of 20 words had a
+  real match on position 1 (before: 3); measurement in #28.
 - **`--quiet` for `note`, `store`, `update` and `connect`** (#12): one line instead
   of JSON, e.g. `stored dec-012 semantic/decisions/dec-012-….md`. On a real store
   a plain `store` answers with about 400 lines, almost all of them
@@ -145,6 +142,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MemoryAPI`, a test double) has to add it. Exact matches come first even when a
   result below them scores higher: keep the list order, or sort by `exactMatch`
   first and `score` second. `HybridSearchOptions` has a new optional `allowIds`.
+- **Search runs a second full-text query** when the query has a word. On a synthetic
+  20,000-entry store where most entries contain the word, a search took 60–100 ms
+  instead of 20–45 ms; a word that occurs nowhere costs nothing measurable.
 
 ## [0.3.0] — 2026-06-01
 
