@@ -61,6 +61,8 @@ export interface SearchResult {
   matchType: "fts" | "vector" | "hybrid";
   source: string;
   storeSource: StoreSource;
+  /** Hybrid search only: contains the query literally (see README, "Exact matches first"). */
+  exactMatch?: boolean;
 }
 
 export interface HybridSearchOptions {
@@ -74,6 +76,11 @@ export interface HybridSearchOptions {
   boostTags?: string[];
   /** Entry ID the user is currently looking at — connected entries get a boost */
   contextEntryId?: string;
+  /**
+   * Only these entry ids may be returned (tag or connection filters). Applied before `limit`
+   * cuts the list, so entries outside the filter cannot take its places.
+   */
+  allowIds?: ReadonlySet<string>;
 }
 
 export interface SessionState {
@@ -112,10 +119,16 @@ export interface MemorySearchOutput {
     source: string;
     /**
      * Min-max normalised over its store's candidate pool, before minScore, limit and filters: the
-     * best candidate gets 1.0 even when nothing matches well. Orders the results of one search;
-     * not a relevance measure, not comparable across searches.
+     * best candidate gets 1.0 even when nothing matches well. Orders the results of one search
+     * within the exact matches and within the rest; not a relevance measure, not comparable
+     * across searches.
      */
     score: number;
+    /**
+     * The title or text contains the query literally (README, "Exact matches first"). These
+     * results come first whatever their score and are never dropped by minScore.
+     */
+    exactMatch: boolean;
     type: string;
     lastAccessed: string;
     storeSource: StoreSource;

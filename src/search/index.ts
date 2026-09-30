@@ -125,6 +125,69 @@ function collectStems(word: string): string[] {
 }
 
 /**
+ * Fold text for comparisons that should not care how a German word was typed: lower case, umlauts
+ * and ß spelled out (ä → ae, ö → oe, ü → ue, ß → ss), other accents on Latin letters dropped
+ * (é → e). "Grün" and "Gruen" both become "gruen". NFC first, so a decomposed "u + ◌̈" is an
+ * umlaut too and not a "u" whose mark the last step strips. Only the Latin combining accents
+ * (U+0300–U+036F) are dropped: in Devanagari or Thai a vowel sign is part of the word.
+ */
+// The block "Combining Diacritical Marks" — the accents NFD splits off Latin letters.
+// biome-ignore lint/suspicious/noMisleadingCharacterClass: a range of lone combining marks, on purpose
+const LATIN_ACCENTS = /[\u0300-\u036f]/g;
+
+function foldSpelling(text: string): string {
+  return text
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/ä/g, "ae")
+    .replace(/ö/g, "oe")
+    .replace(/ü/g, "ue")
+    .replace(/ß/g, "ss")
+    .normalize("NFD")
+    .replace(LATIN_ACCENTS, "");
+}
+
+const SPELLED_OUT_PAIR = /ae|oe|ue|ss/g;
+const UMLAUT_OF: Record<string, string> = {
+  ae: "ä",
+  oe: "ö",
+  ue: "ü",
+  ss: "ß",
+};
+
+/** Beyond five pairs in one word only the first five vary (32 spellings at most). */
+const MAX_SPELLING_PAIRS = 5;
+const MAX_SPELLINGS = 1 << MAX_SPELLING_PAIRS;
+
+/**
+ * Every spelling of a query word that foldSpelling treats as the same word, for the exact-match
+ * candidate search: the spelled-out form and each of its ae/oe/ue/ss written as ä/ö/ü/ß, in every
+ * combination. "Fußgaenger" → fussgaenger, fußgaenger, fussgänger, fußgänger — so an entry is found
+ * however it mixes the two ways of writing. Most combinations are no word ("neue" → "neüe"), and
+ * the tokenizer folds ü to u, so "grün" also matches "Grund": such rows fail the exact-match check
+ * and are skipped, which is why the candidate search reads far more rows than it keeps.
+ */
+function spellings(word: string): string[] {
+  const base = foldSpelling(word);
+  const pairs = [...base.matchAll(SPELLED_OUT_PAIR)].slice(
+    0,
+    MAX_SPELLING_PAIRS,
+  );
+  const out: string[] = [];
+  for (let mask = 0; mask < 1 << pairs.length; mask++) {
+    let spelling = "";
+    let pos = 0;
+    pairs.forEach((pair, i) => {
+      if (!(mask & (1 << i))) return;
+      spelling += base.slice(pos, pair.index) + UMLAUT_OF[pair[0]];
+      pos = (pair.index ?? 0) + 2;
+    });
+    out.push((spelling + base.slice(pos)).normalize("NFC"));
+  }
+  return out;
+}
+
+/**
  * Preprocess text for FTS5 indexing:
  * 1. Optionally prepend the document title for title-match boosting
  * 2. Expand hyphenated terms: "KI-Services" → "KI-Services KI Services"
@@ -240,6 +303,102 @@ function sanitizeFtsQuery(query: string): string {
   }
 
   return sanitized;
+}
+
+/**
+ * Query words of up to this many letters (as typed: "Tür" is three) only count as an exact match
+ * when they stand alone as a word. Longer ones count anywhere, also inside a compound.
+ *
+ * German builds compounds, so "Kontingent" should find "Wochenkontingent" and "Backup" should find
+ * "Backups" — a word-boundary rule would miss both, and the plural and genitive of every name.
+ * For short words a substring is mostly noise: "KI" is in "Kinder", "Bot" in "Botschaft", "App"
+ * in "Apple". Three is where that noise stops being the rule; a four-letter word can still hit a
+ * longer one ("Test" in "latest"), which then only moves up among the entries that contain it.
+ */
+const WHOLE_WORD_MAX_LENGTH = 3;
+
+// Letters, combining marks (part of the word in many scripts) and digits.
+const ALNUM = "[\\p{L}\\p{M}\\p{N}]";
+const NOT_ALNUM = "[^\\p{L}\\p{M}\\p{N}]";
+
+/**
+ * The words of a query for exact matching: split at whitespace, each word into its runs of letters
+ * and digits — "2026-09-15" is one word with the parts 2026, 09, 15. A word whose letters and
+ * digits add up to one character is dropped.
+ */
+function exactQueryWords(query: string): string[][] {
+  return (
+    query
+      .normalize("NFC")
+      .split(/\s+/)
+      .map((word) =>
+        word.split(/[^\p{L}\p{M}\p{N}]+/u).filter((p) => p.length > 0),
+      )
+      // Letters and digits only: marks alone fold to nothing in Latin text, and an empty
+      // pattern is "contained" in every entry.
+      .filter(
+        (parts) => (parts.join("").match(/[\p{L}\p{N}]/gu)?.length ?? 0) >= 2,
+      )
+  );
+}
+
+/**
+ * One test per query word for the exact-match check in searchHybrid, each over text already
+ * passed through foldSpelling. Empty when the query has no such word — then nothing is an exact
+ * match and the ranking is the plain hybrid one.
+ *
+ * A word with punctuation inside — a date like "2026-09-15", an id like "dec-012" — counts only
+ * with its parts in that order and nothing but punctuation or spaces between them, not as parts
+ * scattered over the text. A short part at either end must not run on into a longer word.
+ */
+function exactWordTests(query: string): Array<(folded: string) => boolean> {
+  return exactQueryWords(query).map((parts) => {
+    const start =
+      (parts[0] as string).length <= WHOLE_WORD_MAX_LENGTH
+        ? `(?<!${ALNUM})`
+        : "";
+    const end =
+      (parts[parts.length - 1] as string).length <= WHOLE_WORD_MAX_LENGTH
+        ? `(?!${ALNUM})`
+        : "";
+    // Parts are letters and digits only, so they need no escaping.
+    const body = parts.map(foldSpelling).join(`${NOT_ALNUM}+`);
+    const re = new RegExp(start + body + end, "u");
+    return (text) => re.test(text);
+  });
+}
+
+/** How many rows the exact-match candidate query reads at most (see searchHybrid). */
+const MAX_CANDIDATE_ROWS = 1000;
+
+/**
+ * The FTS5 query that fetches exact-match candidates, or null when the query has no word.
+ *
+ * The regular full-text query cannot be used for this: it matches stems and German prefixes, and
+ * it never matches "Rueckmeldung" for "Rückmeldung", the plural "Backups" for "Backup" (unless a
+ * stem happens to agree) or a date as one piece. Changing it would change the ranking of every
+ * search. This one is only used to find entries the exact-match check then confirms:
+ * - a word: any of its spellings (see spellings), as a word beginning when it is longer than
+ *   WHOLE_WORD_MAX_LENGTH ("backup"* finds "Backups");
+ * - a word with punctuation inside: its parts as a phrase, "2026 09 15", in every spelling of its
+ *   parts (at most MAX_SPELLINGS phrases);
+ * - every term lower case and quoted, so no query word is read as FTS5 syntax (AND, OR, NOT).
+ */
+function exactCandidateQuery(query: string): string | null {
+  const groups = exactQueryWords(query).map((parts) => {
+    const prefix =
+      (parts[parts.length - 1] as string).length > WHOLE_WORD_MAX_LENGTH
+        ? "*"
+        : "";
+    let phrases = [""];
+    for (const part of parts) {
+      phrases = phrases
+        .flatMap((p) => spellings(part).map((s) => (p ? `${p} ${s}` : s)))
+        .slice(0, MAX_SPELLINGS);
+    }
+    return `(${phrases.map((p) => `"${p}"${prefix}`).join(" OR ")})`;
+  });
+  return groups.length > 0 ? groups.join(" AND ") : null;
 }
 
 function rowToMemory(row: MemoryRow): Memory {
@@ -713,7 +872,51 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
         t.toLowerCase().replace(/\/+$/, ""),
       );
 
-      const scored: Array<{ id: string; score: number; memory: Memory }> = [];
+      const exactTests = exactWordTests(query);
+      const containsQuery = (memory: Memory): boolean => {
+        if (exactTests.length === 0) return false;
+        const text = foldSpelling(
+          `${memory.metadata.title}\n${memory.content}`,
+        );
+        return exactTests.every((test) => test(text));
+      };
+
+      // Entries that contain the query but are in neither pool — the regular full-text query
+      // does not match every spelling, word ending or date (see exactCandidateQuery). Only
+      // confirmed exact matches are added, so a search without one ranks exactly as before.
+      // Rows that fail the check, and rows a filter (allowIds) would drop, are skipped, not
+      // counted: up to MAX_CANDIDATE_ROWS rows are read until `poolSize` are kept — with only
+      // `poolSize` rows, 40 entries with "Grund" crowded out the one with "grün". `.all()`, not
+      // `.iterate()` with a break: an unfinished statement keeps its read open and locks the
+      // tables for rebuild and for writers in other processes.
+      const extra = new Map<string, Memory>();
+      const candidateQuery = exactCandidateQuery(query);
+      if (candidateQuery) {
+        let rows: FtsResultRow[] = [];
+        try {
+          rows = searchFts.all(candidateQuery, MAX_CANDIDATE_ROWS);
+        } catch (error) {
+          if (!isFtsQueryError(error)) throw error;
+        }
+        for (const row of rows) {
+          if (extra.size >= poolSize) break;
+          if (allIds.has(row.id)) continue;
+          if (opts.allowIds && !opts.allowIds.has(row.id)) continue;
+          const memory = rowToMemory(row);
+          if (containsQuery(memory)) {
+            extra.set(row.id, memory);
+            allIds.add(row.id);
+          }
+        }
+      }
+
+      const scored: Array<{
+        id: string;
+        score: number;
+        memory: Memory;
+        exact: boolean;
+        extra: boolean;
+      }> = [];
 
       for (const id of allIds) {
         const ftsEntry = ftsRanks.get(id);
@@ -723,7 +926,8 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
         const rankVec = vecEntry ? vecEntry.rank : missingRank;
 
         const memory = (ftsEntry?.result.memory ??
-          vecEntry?.result.memory) as Memory;
+          vecEntry?.result.memory ??
+          extra.get(id)) as Memory;
 
         // RRF score
         let score =
@@ -763,36 +967,60 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
           score *= 1.15;
         }
 
-        scored.push({ id, score, memory });
+        scored.push({
+          id,
+          score,
+          memory,
+          exact: containsQuery(memory),
+          extra: extra.has(id),
+        });
       }
 
       // Sort by score descending
       scored.sort((a, b) => b.score - a.score);
 
       // Min-Max normalization: remap RRF scores to 0–1 range
-      // so that minScore filtering becomes meaningful
-      if (scored.length >= 2) {
-        const first = scored[0];
-        const last = scored[scored.length - 1];
-        if (first && last) {
-          const range = first.score - last.score;
-          if (range > 0) {
-            for (const s of scored) {
-              s.score = (s.score - last.score) / range;
-            }
-          } else {
-            for (const s of scored) {
-              s.score = 1.0;
-            }
-          }
-        }
-      } else if (scored.length === 1 && scored[0]) {
-        scored[0].score = 1.0;
+      // so that minScore filtering becomes meaningful. The scale comes from the two pools only:
+      // the extra exact-match candidates are placed on it (clamped), they do not move it — the
+      // entries the search has always returned keep their scores.
+      const pool = scored.filter((s) => !s.extra);
+      const scale = pool.length > 0 ? pool : scored;
+      const top = scale[0]?.score ?? 0;
+      const bottom = scale[scale.length - 1]?.score ?? 0;
+      const range = top - bottom;
+      for (const s of scored) {
+        const normalised =
+          range > 0 ? (s.score - bottom) / range : s.score >= top ? 1 : 0;
+        s.score = Math.min(1, Math.max(0, normalised));
       }
 
-      // Filter by minScore and limit
+      // Exact matches first. An entry whose title or text contains every query word literally
+      // (foldSpelling on both sides, so case and ä/ae do not matter; see WHOLE_WORD_MAX_LENGTH for
+      // short words) comes before every entry that does not, whatever the scores say.
+      //
+      // The scores alone cannot do this. The vector search has no notion of "contains the word",
+      // and with weightVector above weightFts a close neighbour without the word regularly beat
+      // the entries that had it, with the best score of the search.
+      //
+      // - Within each group the order stays the hybrid one: the sort is stable and runs on the
+      //   list already sorted by score.
+      // - An exact match is kept even below minScore; the normalised score says nothing about
+      //   whether the word is there, and a literal hit filtered out as "irrelevant" is the bug.
+      //   For every other entry minScore works as before, on the same normalised score.
+      // - The score is left as it was, so it no longer falls strictly down the list: an exact
+      //   match can score lower than a non-exact one below it. `exactMatch` says which group an
+      //   entry is in, and callers that merge lists sort by it first (mergeSearchResults).
+      // - Candidates are the two pools plus the exact matches the candidate query found. An entry
+      //   that has the word only inside a longer word ("Wochenkontingent") is a candidate only
+      //   if the vector search brings it in.
+      // - `allowIds` (tag and connection filters) applies before the sort and the limit. After
+      //   them, entries outside the filter take places that entries inside it should have — with
+      //   exact matches moved up, often all of them.
+      const allowIds = opts.allowIds;
       return scored
-        .filter((s) => s.score >= opts.minScore)
+        .filter((s) => s.exact || s.score >= opts.minScore)
+        .filter((s) => !allowIds || allowIds.has(s.id))
+        .sort((a, b) => Number(b.exact) - Number(a.exact))
         .slice(0, opts.limit)
         .map((s) => ({
           memory: s.memory,
@@ -800,6 +1028,7 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
           matchType: "hybrid" as const,
           source: "hybrid-rrf",
           storeSource: "project" as const,
+          exactMatch: s.exact,
         }));
     },
 

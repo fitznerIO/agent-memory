@@ -31,6 +31,7 @@ export function createMemoryApi(system: MemorySystem): MemoryAPI {
         content: r.content,
         tags: r.tags,
         score: r.score,
+        exactMatch: r.exactMatch,
         source: r.source,
         lastAccessed: r.lastAccessed,
         storeSource: r.storeSource,

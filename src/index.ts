@@ -516,7 +516,8 @@ export function createMemorySystem(
 
   /**
    * Merge project and global search results.
-   * Project results are preferred at equal scores.
+   * Exact matches first (see searchHybrid), then by score; project results are preferred at
+   * equal scores.
    */
   function mergeSearchResults(
     projectResults: SearchResult[],
@@ -541,8 +542,14 @@ export function createMemorySystem(
       }
     }
 
-    // Sort by score descending (project wins ties due to stable sort + appearing first)
-    deduped.sort((a, b) => b.score - a.score);
+    // Exact matches first, then score descending (project wins ties due to stable sort +
+    // appearing first). By score alone, a global entry without the word would slip back in
+    // front of a project entry that has it — each store normalises its own scores.
+    deduped.sort(
+      (a, b) =>
+        Number(b.exactMatch === true) - Number(a.exactMatch === true) ||
+        b.score - a.score,
+    );
     return deduped.slice(0, limit);
   }
 
@@ -619,14 +626,26 @@ export function createMemorySystem(
         connFilterIds = new Set(ids);
       }
 
-      // Fetch more results to account for post-filtering
-      const fetchLimit = tagFilterIds || connFilterIds ? limit * 5 : limit;
+      // Both filters together: an entry must pass each one that is set.
+      const allowIds =
+        tagFilterIds && connFilterIds
+          ? new Set([...tagFilterIds].filter((id) => connFilterIds.has(id)))
+          : (tagFilterIds ?? connFilterIds ?? undefined);
+
+      // A filtered search keeps its larger pool (limit * 5 → limit * 15 per channel), so its
+      // entries keep the scores they always had.
+      const fetchLimit = allowIds ? limit * 5 : limit;
+      const hybridOptions = {
+        limit: fetchLimit,
+        minScore: input.minScore ?? 0.3,
+        allowIds,
+      };
 
       // Search project store
       const projectResults = await project.searchIndex.searchHybrid(
         input.query,
         queryEmbedding.vector,
-        { limit: fetchLimit, minScore: input.minScore ?? 0.3 },
+        hybridOptions,
       );
 
       // Search global store if available
@@ -635,7 +654,7 @@ export function createMemorySystem(
         const globalResults = await global.searchIndex.searchHybrid(
           input.query,
           queryEmbedding.vector,
-          { limit: fetchLimit, minScore: input.minScore ?? 0.3 },
+          hybridOptions,
         );
         rawResults = mergeSearchResults(
           projectResults,
@@ -646,20 +665,7 @@ export function createMemorySystem(
         rawResults = projectResults;
       }
 
-      // Apply v2-lite filters
-      let finalResults = rawResults;
-      if (tagFilterIds) {
-        finalResults = finalResults.filter((r) =>
-          tagFilterIds.has(r.memory.metadata.id),
-        );
-      }
-      if (connFilterIds) {
-        finalResults = finalResults.filter((r) =>
-          connFilterIds.has(r.memory.metadata.id),
-        );
-      }
-
-      finalResults = finalResults.slice(0, limit);
+      const finalResults = rawResults.slice(0, limit);
 
       // Enrich results with v2-lite metadata
       const enrichedResults = await Promise.all(
@@ -671,6 +677,7 @@ export function createMemorySystem(
             content: r.memory.content,
             source: r.memory.filePath,
             score: r.score,
+            exactMatch: r.exactMatch === true,
             type: r.memory.metadata.type,
             lastAccessed: new Date(
               r.memory.metadata.lastAccessedAt,

@@ -64,6 +64,11 @@ bunx agent-memory search --query "what to find" [--limit 5] [--min-score 0.0]
 - `--no-global`: Only search project store
 
 Returns `{ results: [...], totalFound: N }`. Each result includes `storeSource: "project" | "global"`.
+Results that contain every query word literally (case and ä/ae spelling ignored) come first and have
+`exactMatch: true` — keep the list order, their `score` can be lower than that of a result below them.
+`--min-score` never drops them. To find a name or term, search for it alone: every query word must be in
+an entry for it to count as exact. `exactMatch` is looser than what `forget` deletes (see below) — to delete
+a project result (`storeSource: "project"`), use its id.
 
 ### read — Read a specific memory
 

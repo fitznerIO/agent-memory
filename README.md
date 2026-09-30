@@ -253,13 +253,55 @@ matches. The substitute can change results whenever a list is shorter than the p
 (for entries missing from that list); in a fully embedded store, entries that match
 the query words can only move up.
 
+**Exact matches first.** An entry whose title or text contains every query word
+literally comes before every entry that does not (`exactMatch: true` in the
+output); within both groups the order is the hybrid one. The scores cannot do this
+on their own: the vector search has no notion of "contains the word", and with the
+vector weight above the full-text weight a close neighbour without the word often
+outscored the entries that had it. To find a name or term, search for it alone — every
+query word has to be in the entry, so a whole question rarely has an exact match. What
+counts as "contains":
+
+- **Every word**, in any order and any distance apart. A word is what the query
+  separates by spaces; one with punctuation inside — a date like `2026-09-15`, an id
+  like `dec-012`, `KI-Agent` — counts only with its parts in that order and nothing but
+  spaces or punctuation between them. One-letter words are ignored.
+- **Case and umlaut spelling do not matter.** `Grün`, `grün` and `Gruen` are the same
+  word, so are `Größe` and `Groesse`; other accents on Latin letters are dropped
+  (`é` = `e`). Vowel signs of other scripts stay part of the word.
+- **Words of up to three letters only as a whole word** (`KI` is not in `Kinder`,
+  `Tür` not in `Türkei` — letters as typed). Longer words also count inside a
+  compound: `Kontingent` is in `Wochenkontingent`, `Backup` in `Backups`.
+- **Title and text only**, not tags. A title hit does not rank above a text hit.
+
+The candidates are the full-text and vector pools, as before, plus what a second
+full-text query finds for the check: every spelling of each word (`Rückmeldung` and
+`Rueckmeldung`, `Fußgaenger` and `Fussgänger`, also inside `KI-Übersicht`), words of
+four or more letters also at the start of a longer word (`Backups`,
+`Kontingentgrenze`), a date or id as one phrase. Only entries that pass the check are
+added — rows that fail it, like the `Grund…` that `grün` also matches, are skipped
+(it reads up to 1000 rows) —
+and they do not change the other entries' scores: a search without an exact match
+ranks exactly as before. The index is unchanged. An entry that has the word only at the end of a longer word
+(`Wochenkontingent`) is a candidate only if the vector search brings it in. Tag and
+connection filters (`--tags`, `--connected-to`) apply before exact matches move up
+and the list is cut, so entries outside the filter cannot take its places.
+
+`exactMatch` is looser than what `forget` deletes: `forget` needs the query as a
+phrase — whole words, in order — and does not treat `ä` and `ae` as the same. An
+entry with `exactMatch: true` is not necessarily one `forget` with the same query
+would remove; forget by id when in doubt.
+
 **What the score means.** Scores are min-max normalised over each store's candidate
 pool, before `minScore`, `limit` and tag or connection filters: the best candidate
 gets `1.0` even when nothing matches well, and — with at least two different scores —
 the worst gets `0.0` (a single candidate, or all-equal scores, all get `1.0`).
-A score orders the results of one search; it is not a relevance measure and cannot
-be compared across searches. `minScore` filters on this normalised value, so it can
-drop the weakest real match (#9). `search()` — and so the CLI — uses `minScore 0.3`
+A score orders the results of one search within the exact matches and within the
+rest — an exact match can score lower than a result below it. An exact match found only
+by the second query is placed on its store's scale, clamped to 0–1, without moving it. It is not a relevance
+measure and cannot be compared across searches. `minScore` filters on this
+normalised value, but never drops an exact match; for all other results it can
+still drop the weakest one (#9). `search()` — and so the CLI — uses `minScore 0.3`
 unless one is given (`--min-score`); the config default of `0.1` only applies when
 `searchHybrid` is called directly.
 
@@ -267,8 +309,8 @@ unless one is given (`--min-score`); the config default of `0.1` only applies wh
 candidate pool (`limit * 3`), the RRF constant `k` (capped at `poolSize / 4`) and the
 substitute rank. The same query can order its top results differently at
 `--limit 5` and `--limit 30`, and a search with `--tags` or `--connected-to` (which
-fetches `limit * 5` candidates before filtering) can order shared hits differently
-from one without.
+ranks as if the limit were five times larger) can order shared hits differently from
+one without.
 
 ### Git Manager
 
@@ -397,6 +439,7 @@ Global flags:
       "content": "User prefers TypeScript over JavaScript",
       "source": "semantic/abc123.md",
       "score": 1,
+      "exactMatch": false,
       "type": "semantic",
       "lastAccessed": "2025-01-15T10:30:00.000Z",
       "storeSource": "project"

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Exact matches first.** An entry whose title or text contains every query word
+  literally now comes before every entry that does not; within both groups the
+  hybrid order stays. Case and umlaut spelling do not matter (`Grün` = `Gruen`,
+  `Fußgaenger` = `Fussgänger`), words of up to three letters count only as a whole
+  word, longer ones also inside other words, and a date or id like `2026-09-15` or
+  `dec-012` only with its parts in order. A second full-text query fetches such
+  entries that are in neither candidate pool — in any spelling, as a word beginning,
+  a date as a phrase; only entries that pass the check are added, so a search
+  without an exact match ranks exactly as before. Exact matches are never dropped by
+  `minScore`, project and global results are merged exact-first, and each result says
+  which group it is in: `exactMatch`. Before, a close vector neighbour that never
+  mentions a rare name regularly came first with score 1.0 and the entries naming it
+  followed on positions 3, 5 and 8. On a copy of a real store, 20 of 20 words had a
+  real match on position 1 (before: 3); measurement in #28.
 - **`--quiet` for `note`, `store`, `update` and `connect`** (#12): one line instead
   of JSON, e.g. `stored dec-012 semantic/decisions/dec-012-….md`. On a real store
   a plain `store` answers with about 400 lines, almost all of them
@@ -22,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`--tags` and `--connected-to` filter before the list is cut.** The filter used to
+  run on the `limit * 5` best results, so entries outside it took places that entries
+  inside it should have had, and a filtered search could return fewer results than
+  exist — with exact matches moved up, often none.
 - **No more `dtype not specified` warning on every call** (#12). The embedding
   pipeline is now created with `dtype: "auto"` — exactly what the library does
   without a dtype (the model's own setting, else fp32 on CPU), minus the warning.
@@ -115,6 +133,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An unknown `--mode` is rejected** instead of falling back to `replace`. The
   flag decides whether the existing body survives; a typo used to overwrite it
   without a word.
+
+### Notes
+
+- **Search output: a new field, and `score` no longer orders the whole list.**
+  `exactMatch` is a new required field of `MemorySearchOutput.results[]` and of
+  `MemorySearchHit` (extension facade); code that builds these types itself (a fake
+  `MemoryAPI`, a test double) has to add it. Exact matches come first even when a
+  result below them scores higher: keep the list order, or sort by `exactMatch`
+  first and `score` second. `HybridSearchOptions` has a new optional `allowIds`.
+- **Search runs a second full-text query** when the query has a word. On a synthetic
+  20,000-entry store where most entries contain the word, a search took 60–100 ms
+  instead of 20–45 ms; a word that occurs nowhere costs nothing measurable.
 
 ## [0.3.0] — 2026-06-01
 
