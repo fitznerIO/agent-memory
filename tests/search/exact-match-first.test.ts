@@ -40,12 +40,13 @@ function makeProdConfig(sqlitePath: string): MemoryConfig {
 }
 
 /** Same type, tags and timestamps for everyone, so no boost can flip the order. */
+/** `distance` null: no vector at all, so the entry can only come in through full-text search. */
 function makeMemory(
   id: string,
   content: string,
-  distance: number,
+  distance: number | null,
   title = `Memory ${id}`,
-): Memory & { embedding: Float32Array } {
+): Memory & { embedding?: Float32Array } {
   return {
     metadata: {
       id,
@@ -60,7 +61,7 @@ function makeMemory(
     },
     content,
     filePath: `/memories/semantic/${id}.md`,
-    embedding: vectorAtDistance(distance),
+    embedding: distance === null ? undefined : vectorAtDistance(distance),
   };
 }
 
@@ -250,7 +251,7 @@ describe("searchHybrid: exact matches first", () => {
     await idx.index(makeMemory("office", "Das Steuerbüro hat angerufen", 40));
     await idx.index(makeMemory("walker", "Ein Fussgänger wartet", 41));
     await idx.index(
-      makeMemory("crossing", "Der Fußgängerstraßenübergang ist gesperrt", 42),
+      makeMemory("crossing", "Die Fußgängerstraßenübergänge sind gesperrt", 42),
     );
 
     expect(exactIds(await search("Steuerbuero"))).toEqual(["office"]);
@@ -259,8 +260,8 @@ describe("searchHybrid: exact matches first", () => {
       "crossing",
       "walker",
     ]);
-    // Four pairs, all written the other way.
-    expect(exactIds(await search("Fussgaengerstrassenuebergang"))).toEqual([
+    // Five pairs, all written the other way.
+    expect(exactIds(await search("Fussgaengerstrassenuebergaenge"))).toEqual([
       "crossing",
     ]);
   });
@@ -416,6 +417,48 @@ describe("searchHybrid: exact matches first", () => {
     expect(exactIds(results)).toEqual(["pudding"]);
   });
 
+  test("rows the check rejects do not crowd out the exact match", async () => {
+    await indexFillers(35);
+    // The tokenizer folds ü to u: the candidate query for "Buerger" / "Gruen" also matches every
+    // "Burger…" / "Grund…". Short decoys rank first by BM25; the real entries are long and have
+    // no vector.
+    for (let i = 0; i < 40; i++) {
+      await idx.index(makeMemory(`burger-${i}`, `Burger ${i}`, null));
+      await idx.index(
+        makeMemory(`grund-${i}`, `Aus diesem Grund die Grundlage ${i}`, null),
+      );
+    }
+    const long = FILLER.slice(0, 8).join(". ");
+    await idx.index(makeMemory("citizen", `${long}. Ein Bürger fragt.`, null));
+    await idx.index(makeMemory("green", `${long}. Die Wiese ist grün.`, null));
+
+    expect(exactIds(await search("Buerger"))).toEqual(["citizen"]);
+    expect(exactIds(await search("Gruen", { limit: 5 }))).toEqual(["green"]);
+  });
+
+  test("a word with punctuation inside is found in either spelling", async () => {
+    await indexFillers(35);
+    await idx.index(makeMemory("umlaut", "Die KI-Übersicht ist fertig", 40));
+    await idx.index(makeMemory("spelled", "Die KI-Uebersicht ist alt", 41));
+
+    for (const query of ["KI-Übersicht", "KI-Uebersicht"]) {
+      expect(exactIds(await search(query)).sort()).toEqual([
+        "spelled",
+        "umlaut",
+      ]);
+    }
+  });
+
+  test("marks inside words of other scripts are kept", async () => {
+    await indexFillers(35);
+    // काम (work) and कम (less) differ only by a vowel sign. Both are near vector neighbours.
+    await idx.index(makeMemory("work", "काम पूरा हुआ", 0.5));
+    await idx.index(makeMemory("less", "कम समय बचा", 1.5));
+
+    expect(exactIds(await search("काम"))).toEqual(["work"]);
+    expect(exactIds(await search("कम"))).toEqual(["less"]);
+  });
+
   test("minScore never drops an exact match, and still filters the rest", async () => {
     await indexFillers(35);
     await idx.index(makeMemory("name", "Quillfeather confirmed", 40));
@@ -433,11 +476,12 @@ describe("searchHybrid: exact matches first", () => {
   // A search without an exact match must rank exactly as before: the candidates are the regular
   // full-text pool and the vector pool, nothing else. The decoys contain what the candidate query
   // finds for these words through the tokenizer's folding ("bürger" is searched as "burger",
-  // "dü" as "du") without containing the words themselves.
+  // "dü" as "du") without containing the words themselves. They have no vector and the store is
+  // small, so a decoy that slipped in would show up in the list.
   test("without an exact match the candidates and their order are the plain hybrid ones", async () => {
-    await indexFillers(35);
-    await idx.index(makeMemory("burger", "Der Burger war kalt", 40));
-    await idx.index(makeMemory("du", "du bist dran", 41));
+    await indexFillers(5);
+    await idx.index(makeMemory("burger", "Der Burger war kalt", null));
+    await idx.index(makeMemory("du", "du bist dran", null));
 
     for (const query of ["Buerger", "due", "Zeppelinhangar", "a", "–"]) {
       const results = await search(query);

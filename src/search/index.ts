@@ -126,10 +126,15 @@ function collectStems(word: string): string[] {
 
 /**
  * Fold text for comparisons that should not care how a German word was typed: lower case, umlauts
- * and ß spelled out (ä → ae, ö → oe, ü → ue, ß → ss), every other diacritic dropped (é → e).
- * "Grün" and "Gruen" both become "gruen". NFC first, so a decomposed "u + ◌̈" is an umlaut too
- * and not a "u" whose mark the last step strips.
+ * and ß spelled out (ä → ae, ö → oe, ü → ue, ß → ss), other accents on Latin letters dropped
+ * (é → e). "Grün" and "Gruen" both become "gruen". NFC first, so a decomposed "u + ◌̈" is an
+ * umlaut too and not a "u" whose mark the last step strips. Only the Latin combining accents
+ * (U+0300–U+036F) are dropped: in Devanagari or Thai a vowel sign is part of the word.
  */
+// The block "Combining Diacritical Marks" — the accents NFD splits off Latin letters.
+// biome-ignore lint/suspicious/noMisleadingCharacterClass: a range of lone combining marks, on purpose
+const LATIN_ACCENTS = /[\u0300-\u036f]/g;
+
 function foldSpelling(text: string): string {
   return text
     .normalize("NFC")
@@ -139,7 +144,7 @@ function foldSpelling(text: string): string {
     .replace(/ü/g, "ue")
     .replace(/ß/g, "ss")
     .normalize("NFD")
-    .replace(/\p{M}/gu, "");
+    .replace(LATIN_ACCENTS, "");
 }
 
 const SPELLED_OUT_PAIR = /ae|oe|ue|ss/g;
@@ -152,13 +157,15 @@ const UMLAUT_OF: Record<string, string> = {
 
 /** Beyond five pairs in one word only the first five vary (32 spellings at most). */
 const MAX_SPELLING_PAIRS = 5;
+const MAX_SPELLINGS = 1 << MAX_SPELLING_PAIRS;
 
 /**
  * Every spelling of a query word that foldSpelling treats as the same word, for the exact-match
  * candidate search: the spelled-out form and each of its ae/oe/ue/ss written as ä/ö/ü/ß, in every
  * combination. "Fußgaenger" → fussgaenger, fußgaenger, fussgänger, fußgänger — so an entry is found
- * however it mixes the two ways of writing. Most combinations are no word ("neue" → "neüe" is not
- * one) and are harmless there: this search only adds entries that pass the exact-match check.
+ * however it mixes the two ways of writing. Most combinations are no word ("neue" → "neüe"), and
+ * the tokenizer folds ü to u, so "grün" also matches "Grund": such rows fail the exact-match check
+ * and are skipped, which is why the candidate search reads far more rows than it keeps.
  */
 function spellings(word: string): string[] {
   const base = foldSpelling(word);
@@ -175,7 +182,7 @@ function spellings(word: string): string[] {
       spelling += base.slice(pos, pair.index) + UMLAUT_OF[pair[0]];
       pos = (pair.index ?? 0) + 2;
     });
-    out.push(spelling + base.slice(pos));
+    out.push((spelling + base.slice(pos)).normalize("NFC"));
   }
   return out;
 }
@@ -310,19 +317,22 @@ function sanitizeFtsQuery(query: string): string {
  */
 const WHOLE_WORD_MAX_LENGTH = 3;
 
-const ALNUM = "[\\p{L}\\p{N}]";
-const NOT_ALNUM = "[^\\p{L}\\p{N}]";
+// Letters, combining marks (part of the word in many scripts) and digits.
+const ALNUM = "[\\p{L}\\p{M}\\p{N}]";
+const NOT_ALNUM = "[^\\p{L}\\p{M}\\p{N}]";
 
 /**
  * The words of a query for exact matching: split at whitespace, each word into its runs of letters
  * and digits — "2026-09-15" is one word with the parts 2026, 09, 15. A word whose letters and
- * digits add up to one character is dropped, as in full-text search.
+ * digits add up to one character is dropped.
  */
 function exactQueryWords(query: string): string[][] {
   return query
     .normalize("NFC")
     .split(/\s+/)
-    .map((word) => word.split(/[^\p{L}\p{N}]+/u).filter((p) => p.length > 0))
+    .map((word) =>
+      word.split(/[^\p{L}\p{M}\p{N}]+/u).filter((p) => p.length > 0),
+    )
     .filter((parts) => parts.join("").length >= 2);
 }
 
@@ -352,6 +362,9 @@ function exactWordTests(query: string): Array<(folded: string) => boolean> {
   });
 }
 
+/** How many rows the exact-match candidate query reads at most (see searchHybrid). */
+const MAX_CANDIDATE_ROWS = 1000;
+
 /**
  * The FTS5 query that fetches exact-match candidates, or null when the query has no word.
  *
@@ -361,7 +374,8 @@ function exactWordTests(query: string): Array<(folded: string) => boolean> {
  * search. This one is only used to find entries the exact-match check then confirms:
  * - a word: any of its spellings (see spellings), as a word beginning when it is longer than
  *   WHOLE_WORD_MAX_LENGTH ("backup"* finds "Backups");
- * - a word with punctuation inside: its parts as a phrase, "2026 09 15";
+ * - a word with punctuation inside: its parts as a phrase, "2026 09 15", in every spelling of its
+ *   parts (at most MAX_SPELLINGS phrases);
  * - every term lower case and quoted, so no query word is read as FTS5 syntax (AND, OR, NOT).
  */
 function exactCandidateQuery(query: string): string | null {
@@ -370,9 +384,13 @@ function exactCandidateQuery(query: string): string | null {
       (parts[parts.length - 1] as string).length > WHOLE_WORD_MAX_LENGTH
         ? "*"
         : "";
-    if (parts.length > 1) return `"${parts.join(" ")}"${prefix}`;
-    const terms = spellings(parts[0] as string).map((s) => `"${s}"${prefix}`);
-    return `(${terms.join(" OR ")})`;
+    let phrases = [""];
+    for (const part of parts) {
+      phrases = phrases
+        .flatMap((p) => spellings(part).map((s) => (p ? `${p} ${s}` : s)))
+        .slice(0, MAX_SPELLINGS);
+    }
+    return `(${phrases.map((p) => `"${p}"${prefix}`).join(" OR ")})`;
   });
   return groups.length > 0 ? groups.join(" AND ") : null;
 }
@@ -860,22 +878,27 @@ export function createSearchIndex(config: MemoryConfig): SearchIndex {
       // Entries that contain the query but are in neither pool — the regular full-text query
       // does not match every spelling, word ending or date (see exactCandidateQuery). Only
       // confirmed exact matches are added, so a search without one ranks exactly as before.
+      // Rows that fail the check are skipped, not counted: the query reads up to
+      // MAX_CANDIDATE_ROWS rows until it has kept `poolSize` — with only `poolSize` rows, 40
+      // entries with "Grund" crowded out the one with "grün".
       const extra = new Map<string, Memory>();
       const candidateQuery = exactCandidateQuery(query);
       if (candidateQuery) {
-        let rows: FtsResultRow[] = [];
         try {
-          rows = searchFts.all(candidateQuery, poolSize);
+          for (const row of searchFts.iterate(
+            candidateQuery,
+            MAX_CANDIDATE_ROWS,
+          )) {
+            if (extra.size >= poolSize) break;
+            if (allIds.has(row.id)) continue;
+            const memory = rowToMemory(row);
+            if (containsQuery(memory)) {
+              extra.set(row.id, memory);
+              allIds.add(row.id);
+            }
+          }
         } catch (error) {
           if (!isFtsQueryError(error)) throw error;
-        }
-        for (const row of rows) {
-          if (allIds.has(row.id)) continue;
-          const memory = rowToMemory(row);
-          if (containsQuery(memory)) {
-            extra.set(row.id, memory);
-            allIds.add(row.id);
-          }
         }
       }
 
