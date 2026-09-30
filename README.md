@@ -271,15 +271,16 @@ outscored the entries that had it. What counts as "contains":
   compound: `Kontingent` is in `Wochenkontingent`, `Backup` in `Backups`.
 - **Title and text only**, not tags. A title hit does not rank above a text hit.
 
-Only candidates are ranked — the full-text and vector pools. Full-text search matches
-whole words and their stems, so an entry that has the word only inside a compound
-is a candidate only if the vector search brings it in. Full-text search also looks
-for the other spelling of each word — `Rückmeldung` also for `rueckmeldung`, `Gruen`
-also for `grün` — so entries in either spelling are candidates; the index itself is
-unchanged. A date or id competes with every entry that has the same numbers: when
-many do, some entries with the exact date do not make it into the pool. Tag and
+The candidates are the full-text and vector pools, as before, plus what a second
+full-text query finds for the check: every spelling of each word (`Rückmeldung` and
+`Rueckmeldung`, `Fußgaenger` and `Fussgänger`), words of four or more letters also
+at the start of a longer word (`Backups`, `Kontingentgrenze`), a date or id as one
+phrase. Only entries that pass the check are added, and they do not change the
+other entries' scores — a search without an exact match ranks exactly as before. The
+index is unchanged. An entry that has the word only at the end of a longer word
+(`Wochenkontingent`) is a candidate only if the vector search brings it in. Tag and
 connection filters (`--tags`, `--connected-to`) apply before exact matches move up
-and the list is cut, so exact matches outside the filter cannot take its places.
+and the list is cut, so entries outside the filter cannot take its places.
 
 `exactMatch` is looser than what `forget` deletes: `forget` needs the query as a
 phrase — whole words, in order — and does not treat `ä` and `ae` as the same. An
@@ -302,8 +303,8 @@ unless one is given (`--min-score`); the config default of `0.1` only applies wh
 candidate pool (`limit * 3`), the RRF constant `k` (capped at `poolSize / 4`) and the
 substitute rank. The same query can order its top results differently at
 `--limit 5` and `--limit 30`, and a search with `--tags` or `--connected-to` (which
-fetches `limit * 5` candidates before filtering) can order shared hits differently
-from one without.
+ranks with the pool of `limit * 5`) can order shared hits differently from one
+without.
 
 ### Git Manager
 

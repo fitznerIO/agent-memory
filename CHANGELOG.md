@@ -11,30 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Exact matches first.** An entry whose title or text contains every query word
   literally now comes before every entry that does not; within both groups the
-  hybrid order stays. Case and umlaut spelling do not matter (`Grün` = `Gruen`),
-  words of up to three letters count only as a whole word, longer ones also inside
-  a compound, and a date or id like `2026-09-15` or `dec-012` only with its parts in
-  order. Such entries are never dropped by `minScore`. Project and global results
-  are merged exact-first too (with the same id in both stores, the copy that
-  contains the query is kept), and tag and connection filters apply before the list
-  is cut, so exact matches outside the filter cannot take its places. Each result
-  says which group it is in: `exactMatch`. Before, a close vector neighbour that
-  never mentions a rare name regularly came first with score 1.0 and the entries
-  naming it followed on positions 3, 5 and 8. On a copy of a real 557-entry store,
-  20 words (rare and common): a real match on position 1 for 19 of 20 (before: 3)
-  — the 20th is an umlaut word whose first hits spell it out, which the measuring
-  script does not count; real matches in the top 10: 69 of 75 (before: 41). Of the
-  six left, five contain the word only inside other words (`…herstellung` for
-  `erstellung`), which full-text search does not return. Two-word queries: position
-  1 in 7 of 7 (before: 2). Searches whose words appear nowhere return the same list
-  as before (6 of 6). Tag-filtered searches return at least as many results as
-  before (30 tag and word combinations; a result is only displaced by an exact match
-  inside the tag).
-- **Umlauts find their spelled-out form and the other way round.** Full-text search
-  also looks for the other spelling of each query word: `Rückmeldung` finds entries
-  that write `Rueckmeldung`, `Rueckmeldung` finds `Rückmeldung`, `Steuerbuero` finds
-  `Steuerbüro`. Before, it could not connect the two spellings at all. The index is
-  unchanged, no `rebuild-index` needed.
+  hybrid order stays. Case and umlaut spelling do not matter (`Grün` = `Gruen`,
+  `Fußgaenger` = `Fussgänger`), words of up to three letters count only as a whole
+  word, longer ones also inside other words, and a date or id like `2026-09-15` or
+  `dec-012` only with its parts in order. A second full-text query fetches such
+  entries that are in neither candidate pool — in any spelling, as a word beginning,
+  a date as a phrase; only entries that pass the check are added, so a search
+  without an exact match ranks exactly as before. Exact matches are never dropped by
+  `minScore`, project and global results are merged exact-first, and each result says
+  which group it is in: `exactMatch`. Before, a close vector neighbour that never
+  mentions a rare name regularly came first with score 1.0 and the entries naming it
+  followed on positions 3, 5 and 8. On a copy of a real 557-entry store, 20
+  words (rare and common): a real match on position 1 for 20 of 20 (before: 3), real
+  matches in the top 10: 70 of 75 (before: 41); two-word queries: position 1 in 7 of 7
+  (before: 2); every probe without an exact match returned the same list as before
+  (12 of 12).
 - **`--quiet` for `note`, `store`, `update` and `connect`** (#12): one line instead
   of JSON, e.g. `stored dec-012 semantic/decisions/dec-012-….md`. On a real store
   a plain `store` answers with about 400 lines, almost all of them
@@ -48,11 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A query with a decomposed umlaut searched for word fragments.** The query
-  sanitiser turned the combining mark of an NFD "ü" (as some systems send it) into
-  a space, so `Rückmeldung` searched for `Ru` and `ckmeldung`. Queries are now
-  NFC-normalised first. This also affects `forget`: such a query used to find
-  nothing and now deletes the entry that contains the word as written.
+- **`--tags` and `--connected-to` filter before the list is cut.** The filter used to
+  run on the `limit * 5` best results, so entries outside it took places that entries
+  inside it should have had, and a filtered search could return fewer results than
+  exist — with exact matches moved up, often none.
 - **No more `dtype not specified` warning on every call** (#12). The embedding
   pipeline is now created with `dtype: "auto"` — exactly what the library does
   without a dtype (the model's own setting, else fp32 on CPU), minus the warning.
