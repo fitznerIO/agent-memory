@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Exact matches first.** An entry whose title or text contains every query word
+  literally now comes before every entry that does not; within both groups the
+  hybrid order stays. Case and umlaut spelling do not matter (`Grün` = `Gruen`),
+  words of up to three letters count only as a whole word, longer ones also inside
+  a compound. Such entries are never dropped by `minScore`, and project and global
+  results are merged exact-first too. Each result says which group it is in:
+  `exactMatch`. Before, a close vector neighbour that never mentions a rare name
+  regularly came first with score 1.0 and the entries naming it followed on
+  positions 3, 5 and 8. On a copy of a real 557-entry store, 20 single words
+  (rare and common): a real match on position 1 for 20 of 20 (before: 3); real
+  matches in the top 10: 70 of 75 (before: 41), measured after `rebuild-index`. The five left are words inside
+  other words ("…herstellung" for `erstellung`), which full-text search does not
+  return. Searches whose words appear nowhere return the same list as before.
+- **Umlauts find their spelled-out form and the other way round.** `Rückmeldung`
+  finds entries that write `Rueckmeldung` (the query adds the spelled-out form) and
+  `Rueckmeldung` finds `Rückmeldung` (the index stores it next to the word; entries
+  indexed before this change need `rebuild-index`). Before, full-text search could
+  not connect the two spellings at all.
 - **`--quiet` for `note`, `store`, `update` and `connect`** (#12): one line instead
   of JSON, e.g. `stored dec-012 semantic/decisions/dec-012-….md`. On a real store
   a plain `store` answers with about 400 lines, almost all of them
@@ -22,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A query with a decomposed umlaut searched for word fragments.** The query
+  sanitiser turned the combining mark of an NFD "ü" (as some systems send it) into
+  a space, so `Rückmeldung` searched for `Ru` and `ckmeldung`. Queries are now
+  NFC-normalised first.
 - **No more `dtype not specified` warning on every call** (#12). The embedding
   pipeline is now created with `dtype: "auto"` — exactly what the library does
   without a dtype (the model's own setting, else fp32 on CPU), minus the warning.

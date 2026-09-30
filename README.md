@@ -253,13 +253,38 @@ matches. The substitute can change results whenever a list is shorter than the p
 (for entries missing from that list); in a fully embedded store, entries that match
 the query words can only move up.
 
+**Exact matches first.** An entry whose title or text contains every query word
+literally comes before every entry that does not (`exactMatch: true` in the
+output); within both groups the order is the hybrid one. The scores cannot do this
+on their own: the vector search has no notion of "contains the word", and with the
+vector weight above the full-text weight a close neighbour without the word often
+outscored the entries that had it. What counts as "contains":
+
+- **Every word**, in any order and any distance apart — the same words full-text
+  search looks for (words of one letter are ignored, as there).
+- **Case and umlaut spelling do not matter.** `Grün`, `grün` and `Gruen` are the same
+  word, so are `Größe` and `Groesse`; other accents are dropped (`é` = `e`).
+- **Words of up to three letters only as a whole word** (`KI` is not in `Kinder`).
+  Longer words also count inside a compound: `Kontingent` is in `Wochenkontingent`,
+  `Backup` in `Backups`.
+- **Title and text only**, not tags. A title hit does not rank above a text hit.
+
+Only candidates are ranked — the full-text and vector pools. Full-text search matches
+whole words and their stems, so an entry that has the word only inside a compound
+is a candidate only if the vector search brings it in. Words with umlauts are also
+indexed and searched in their spelled-out form, so `Rückmeldung` finds entries that
+write `Rueckmeldung` and the other way round; entries indexed before this change
+need `agent-memory rebuild-index` for the second direction.
+
 **What the score means.** Scores are min-max normalised over each store's candidate
 pool, before `minScore`, `limit` and tag or connection filters: the best candidate
 gets `1.0` even when nothing matches well, and — with at least two different scores —
 the worst gets `0.0` (a single candidate, or all-equal scores, all get `1.0`).
-A score orders the results of one search; it is not a relevance measure and cannot
-be compared across searches. `minScore` filters on this normalised value, so it can
-drop the weakest real match (#9). `search()` — and so the CLI — uses `minScore 0.3`
+A score orders the results of one search within the exact matches and within the
+rest — an exact match can score lower than a result below it. It is not a relevance
+measure and cannot be compared across searches. `minScore` filters on this
+normalised value, but never drops an exact match; for all other results it can
+still drop the weakest one (#9). `search()` — and so the CLI — uses `minScore 0.3`
 unless one is given (`--min-score`); the config default of `0.1` only applies when
 `searchHybrid` is called directly.
 
@@ -397,6 +422,7 @@ Global flags:
       "content": "User prefers TypeScript over JavaScript",
       "source": "semantic/abc123.md",
       "score": 1,
+      "exactMatch": false,
       "type": "semantic",
       "lastAccessed": "2025-01-15T10:30:00.000Z",
       "storeSource": "project"

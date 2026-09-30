@@ -64,6 +64,9 @@ bunx agent-memory search --query "what to find" [--limit 5] [--min-score 0.0]
 - `--no-global`: Only search project store
 
 Returns `{ results: [...], totalFound: N }`. Each result includes `storeSource: "project" | "global"`.
+Results that contain every query word literally (case and ä/ae spelling ignored) come first and have
+`exactMatch: true` — keep the list order, their `score` can be lower than that of a result below them.
+`--min-score` never drops them.
 
 ### read — Read a specific memory
 
